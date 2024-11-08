@@ -55,7 +55,7 @@ rag = LightRAG(
 )
 
 
-with open("./book.txt") as f:
+with open("./dickens/imports/book.txt") as f:
     rag.insert(f.read())
 
 # Perform naive search

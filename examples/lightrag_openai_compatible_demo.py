@@ -68,7 +68,7 @@ async def main():
             ),
         )
 
-        with open("./book.txt", "r", encoding="utf-8") as f:
+        with open("./dickens/imports/book.txt", "r", encoding="utf-8") as f:
             await rag.ainsert(f.read())
 
         # Perform naive search
