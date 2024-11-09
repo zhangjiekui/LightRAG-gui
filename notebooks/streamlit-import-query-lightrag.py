@@ -262,7 +262,7 @@ def show_insert_dialog():
         with col1:
             if st.button("Insert A Christmas Carol"):
                 try:
-                    with open("dickens/imports/book.txt", "r", encoding="utf-8") as f:
+                    with open("dickens/inbox/book.txt", "r", encoding="utf-8") as f:
                         content = f.read()
                         handle_insert(content)
                 except Exception as e:
@@ -271,7 +271,7 @@ def show_insert_dialog():
         with col2:
             if st.button("Insert LightRAG Paper"):
                 try:
-                    with open("dickens/imports/2410.05779v2-LightRAG.pdf", "rb") as f:
+                    with open("dickens/inbox/2410.05779v2-LightRAG.pdf", "rb") as f:
                         pdf_reader = PyPDF2.PdfReader(f)
                         content = []
                         for page in pdf_reader.pages:
@@ -285,7 +285,7 @@ def show_insert_dialog():
                             combined_content = "\n\n".join(content)
                             handle_insert(combined_content)
                 except FileNotFoundError:
-                    st.error("PDF file not found. Please ensure the file exists in dickens/imports/")
+                    st.error("PDF file not found. Please ensure the file exists in dickens/inbox/")
                 except Exception as e:
                     st.error(f"Error inserting LightRAG whitepaper: {str(e)}")
 
@@ -343,15 +343,14 @@ def show_settings_dialog():
 def show_kg_stats_dialog():
     """Dialog showing detailed knowledge graph statistics and visualization."""
     try:
-        # Use the saved graphml file path
-        graphml_path = os.path.join("./dickens", "graph_chunk_entity_relation.graphml")
+        # Use the correct filename in dickens directory
+        graph_path = "./dickens/graph_chunk_entity_relation.graphml"
         
-        if not os.path.exists(graphml_path):
+        if not os.path.exists(graph_path):
             st.error("Knowledge Graph file not found. Please insert some documents first.")
             return
             
-        # Load the graph from graphml
-        graph = nx.read_graphml(graphml_path)
+        graph = nx.read_graphml(graph_path)
             
         # Basic stats
         stats = {
@@ -379,17 +378,20 @@ def show_kg_stats_dialog():
                 from pyvis.network import Network
                 import random
                 
-                # Create a Pyvis network
                 net = Network(height="600px", width="100%", notebook=True)
-                
-                # Convert NetworkX graph to Pyvis network
                 net.from_nx(graph)
                 
-                # Add colors to nodes
                 for node in net.nodes:
                     node["color"] = "#{:06x}".format(random.randint(0, 0xFFFFFF))
                 
-                net.show(graphml_path)
+                # Save and display using the same filename pattern
+                html_path = "./dickens/graph_chunk_entity_relation.html"
+                net.save_graph(html_path)
+                
+                # Display the saved HTML
+                with open(html_path, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+                st.components.v1.html(html_content, height=600)
                     
             except ImportError:
                 st.warning("Please install pyvis to enable graph visualization: pip install pyvis")
