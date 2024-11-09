@@ -307,7 +307,7 @@ def show_insert_dialog():
         with col1:
             if st.button("Insert A Christmas Carol"):
                 try:
-                    with open("dickens/imports/book.txt", "r", encoding="utf-8") as f:
+                    with open("dickens/inbox/book.txt", "r", encoding="utf-8") as f:
                         content = f.read()
                         handle_insert(content)
                 except Exception as e:
@@ -330,7 +330,7 @@ def show_insert_dialog():
                             combined_content = "\n\n".join(content)
                             handle_insert(combined_content)
                 except FileNotFoundError:
-                    st.error("PDF file not found. Please ensure the file exists in dickens/imports/")
+                    st.error("PDF file not found. Please ensure the file exists in dickens/inbox/")
                 except Exception as e:
                     st.error(f"Error inserting LightRAG whitepaper: {str(e)}")
 

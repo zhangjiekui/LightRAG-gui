@@ -60,7 +60,7 @@ def handle_website_insert(state):
 def insert_test_book(state):
     """Insert test book content."""
     try:
-        with open("dickens/imports/book.txt", "r", encoding="utf-8") as f:
+        with open("dickens/inbox/book.txt", "r", encoding="utf-8") as f:
             content = f.read()
             with get_event_loop_context() as loop:
                 loop.run_until_complete(state.rag.ainsert(content))
@@ -73,7 +73,7 @@ def insert_test_book(state):
 def insert_test_paper(state):
     """Insert test paper content."""
     try:
-        with open("dickens/imports/2410.05779v2-LightRAG.pdf", "rb") as f:
+        with open("dickens/inbox/2410.05779v2-LightRAG.pdf", "rb") as f:
             pdf_reader = PyPDF2.PdfReader(f)
             content = []
             for page in pdf_reader.pages:

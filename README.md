@@ -66,8 +66,8 @@ poetry run streamlit run ui-examples/streamlit-import-query-lightrag.py
 * Set OpenAI API key in environment if using OpenAI models: `export OPENAI_API_KEY="sk-...".`
 * Download the demo text "A Christmas Carol by Charles Dickens":
 ```bash
-mkdir -p ./dickens/imports
-curl https://raw.githubusercontent.com/gusye1234/nano-graphrag/main/tests/mock_data.txt > ./dickens/imports/book.txt
+mkdir -p ./dickens/inbox
+curl https://raw.githubusercontent.com/gusye1234/nano-graphrag/main/tests/mock_data.txt > ./dickens/inbox/book.txt
 ```
 Use the below Python snippet (in a script) to initialize LightRAG and perform queries:
 
@@ -94,7 +94,7 @@ rag = LightRAG(
     # llm_model_func=gpt_4o_complete  # Optionally, use a stronger model
 )
 
-with open("./dickens/imports/book.txt") as f:
+with open("./dickens/inbox/book.txt") as f:
     rag.insert(f.read())
 
 # Perform naive search
@@ -587,7 +587,7 @@ curl -X POST "http://127.0.0.1:8020/insert" \
 ```bash
 curl -X POST "http://127.0.0.1:8020/insert_file" \
      -H "Content-Type: application/json" \
-     -d '{"file_path": "./dickens/imports/book.txt"}'
+     -d '{"file_path": "./dickens/inbox/book.txt"}'
 ```
 </details>
 

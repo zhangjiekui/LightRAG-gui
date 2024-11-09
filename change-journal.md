@@ -2,7 +2,7 @@
 
 ## 2024-11-08
 - [x] clean up testing files and update README
-    - move book.txt to dickens/imports/
+    - move book.txt to dickens/inbox/
 - [x] add Poetry pyproject.toml file for python 3.9-3.11
 - [x] add UI examples in ./ui-examples/
     - add a simple chat UI for Import markdown file or URL and query the graph

@@ -24,7 +24,7 @@ rag = LightRAG(
     ),
 )
 
-with open("./dickens/imports/book.txt", "r", encoding="utf-8") as f:
+with open("./dickens/inbox/book.txt", "r", encoding="utf-8") as f:
     rag.insert(f.read())
 
 for mode in ["naive", "local", "global", "hybrid"]:

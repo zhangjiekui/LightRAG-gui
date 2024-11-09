@@ -3,6 +3,7 @@ __pycache__
 dickens/
 !dickens/inbox/book.txt
 !dickens/inbox/2410.05779v2-LightRAG.pdf
+lib/
 book.txt
 lightrag-dev/
 .idea/
