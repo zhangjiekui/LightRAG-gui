@@ -4,7 +4,30 @@ import requests
 import asyncio
 from contextlib import contextmanager
 import logging
+import PyPDF2
 import xxhash
+import networkx as nx
+import time
+import streamlit as st
+
+# Set page config before any other Streamlit commands
+st.set_page_config(
+    page_title="LightRAG Demo on Streamlit",
+    page_icon="😎",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+    menu_items={
+        'Get help': "https://github.com/aiproductguy/LightRAG",
+        'Report a bug': "https://github.com/HKUDS/LightRAG/issues",
+        'About': """
+        ##### LightRAG gui
+        MIT open-source licensed GUI for LightRAG, a lightweight framework for retrieval-augmented generation:
+        - [LightRAG Documentation](https://github.com/HKUDS/LightRAG)
+        - [GUI Source Code](https://github.com/aiproductguy/LightRAG/notebooks/)
+        - ©️ 2024 AI Product Guy at el
+        """
+    }
+)
 
 # Add the context manager right after imports
 @contextmanager
@@ -37,28 +60,55 @@ logger.setLevel(logging.DEBUG)
 # Rest of the imports
 import streamlit as st
 
-# Define helper functions first
+# Add constants after DEFAULT_LLM_MODEL
+DEFAULT_LLM_MODEL = "gpt-4o-mini-2024-07-18"
+DEFAULT_EMBEDDER_MODEL = "text-embedding-ada-002"
+
+# Add model options constants
+AVAILABLE_LLM_MODELS = [
+    DEFAULT_LLM_MODEL,
+    "gpt-4o-mini"  # Legacy model option
+]
+
+AVAILABLE_EMBEDDER_MODELS = [
+    DEFAULT_EMBEDDER_MODEL,
+    "text-embedding-3-small"  # New smaller model option
+]
+
+# Move helper functions and init_rag before the UI section
 def get_llm_config(model_name):
     """Get the LLM configuration based on model name."""
-    if model_name == "gpt-4o-mini":
-        return gpt_4o_mini_complete, "gpt-4o-mini"
+    if model_name in [DEFAULT_LLM_MODEL, "gpt-4o-mini"]:
+        return gpt_4o_mini_complete, model_name
     else:
         raise ValueError(f"Unsupported LLM model: {model_name}")
 
 def get_embedding_config(model_name):
     """Get the embedding configuration based on model name."""
-    if model_name == "gpt-4o-mini":
-        return EmbeddingFunc(
-            embedding_dim=1536,  # Ada 002 embedding dimension
-            max_token_size=8192,
-            func=lambda texts: openai_embedding(
-                texts,
-                model="gpt-4o-mini",  # Changed from text-embedding-ada-002
-                api_key=st.session_state.settings["api_key"]
-            )
-        )
-    else:
+    embedding_configs = {
+        "text-embedding-ada-002": {
+            "dim": 1536,
+            "max_tokens": 8192
+        },
+        "text-embedding-3-small": {
+            "dim": 1536,
+            "max_tokens": 8191
+        }
+    }
+    
+    if model_name not in embedding_configs:
         raise ValueError(f"Unsupported embedding model: {model_name}")
+        
+    config = embedding_configs[model_name]
+    return EmbeddingFunc(
+        embedding_dim=config["dim"],
+        max_token_size=config["max_tokens"],
+        func=lambda texts: openai_embedding(
+            texts,
+            model=model_name,
+            api_key=st.session_state.settings["api_key"]
+        )
+    )
 
 def test_api_key():
     """Test if OpenAI API key is valid and prompt for input if invalid."""
@@ -77,15 +127,26 @@ def test_api_key():
         # Try a simple embedding request
         response = client.embeddings.create(
             input="test",
-            model="gpt-4o-mini"
+            model="text-embedding-ada-002"
         )
+
+        # Send test prompt
+        chat_response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "What is LightRAG?"}]
+        )
+        test_response = chat_response.choices[0].message.content
+
+        # Log the test response
+        add_activity_log(f"[T] Test prompt: What is LightRAG?\n[@] {test_response[:100]}...")
+        
         return True
         
     except Exception as e:
         st.error(f"""
         ⚠️ API Error. Please ensure:
         1. You have entered a valid OpenAI API key
-        2. Your API key has access to the gpt-4o-mini model
+        2. Your API key has access to the text-embedding-ada-002 model
         
         Error details: {str(e)}
         """)
@@ -109,28 +170,8 @@ def show_api_key_form():
             st.session_state.initialized = False
             st.rerun()
 
-# Initialize session state with API key
-if "initialized" not in st.session_state:
-    st.session_state.initialized = False
-    st.session_state.settings = {
-        "search_mode": "hybrid",
-        "llm_model": "gpt-4o-mini",
-        "embedding_model": "gpt-4o-mini",
-        "system_message": "You are a helpful AI assistant that answers questions based on the provided documents.",
-        "temperature": 0.7,
-        "api_key": "",
-        "query_settings": {
-            "max_chunks": 5,
-            "chunk_similarity_threshold": 0.7,
-            "entity_similarity_threshold": 0.7,
-            "relationship_similarity_threshold": 0.7
-        }
-    }
-    st.session_state.rag = None
-    st.session_state.messages = []
-
-# Function to initialize/reinitialize RAG
 def init_rag():
+    """Initialize/reinitialize RAG."""
     if not test_api_key():  # Test API key before initializing
         return False
         
@@ -143,11 +184,11 @@ def init_rag():
     llm_func, llm_name = get_llm_config(st.session_state.settings["llm_model"])
     embedding_config = get_embedding_config(st.session_state.settings["embedding_model"])
         
+    # Separate LLM kwargs from query settings
     llm_kwargs = {
         "temperature": st.session_state.settings["temperature"],
         "system_prompt": st.session_state.settings["system_message"],
-        "api_key": st.session_state.settings["api_key"],  # Pass API key to LLM
-        **st.session_state.settings["query_settings"]  # Add query settings
+        "api_key": st.session_state.settings["api_key"]
     }
     
     st.session_state.rag = LightRAG(
@@ -160,92 +201,26 @@ def init_rag():
         embedding_func=embedding_config
     )
     st.session_state.initialized = True
+
+    # Log graph stats after initialization
+    graph = st.session_state.rag.chunk_entity_relation_graph._graph
+    if graph:
+        nodes = graph.number_of_nodes()
+        edges = graph.number_of_edges()
+        add_activity_log(f"[*] Records: {nodes} nodes, {edges} edges")
+    
     return True
 
-# Callback functions
-def handle_settings_update():
-    """Update settings and force RAG reinitialization."""
-    st.session_state.initialized = False  # Force reinitialization
+# Move title to sidebar and add activity log first
+st.sidebar.markdown("### [😎 LightRAG](https://github.com/HKUDS/LightRAG) [Kwaai](https://www.kwaai.ai/) Day Demo [🔗](https://lightrag.streamlit.app)\n#alpha 2024-11-09")
 
-def handle_chat_download():
-    """Download chat history as markdown."""
-    if not st.session_state.messages:
-        st.error("No messages to download yet! Start a conversation first.", icon="ℹ️")
-        return
-        
-    from time import strftime
-    
-    # Create markdown content
-    md_lines = [
-        "# LightRAG Chat Session\n",
-        f"*Exported on {strftime('%Y-%m-%d %H:%M:%S')}*\n",
-        "\n## Settings\n",
-        f"- Search Mode: {st.session_state.settings['search_mode']}",
-        f"- LLM Model: {st.session_state.settings['llm_model']}",
-        f"- Embedding Model: {st.session_state.settings['embedding_model']}",
-        f"- Temperature: {st.session_state.settings['temperature']}",
-        f"- System Message: {st.session_state.settings['system_message']}\n",
-        "\n## Conversation\n"
-    ]
-    
-    # Add messages
-    for msg in st.session_state.messages:
-        # Add role header
-        role = "User" if msg["role"] == "user" else "Assistant"
-        md_lines.append(f"\n### {role} ({msg['metadata'].get('timestamp', 'N/A')})")
-        
-        # Add message content
-        md_lines.append(f"\n{msg['content']}\n")
-        
-        # Add metadata if it exists and it's an assistant message
-        if msg["role"] == "assistant" and "metadata" in msg:
-            metadata = msg["metadata"]
-            if "query_info" in metadata:
-                md_lines.append(f"\n> {metadata['query_info']}")
-            if "error" in metadata:
-                md_lines.append(f"\n> ⚠️ Error: {metadata['error']}")
-    
-    # Convert to string
-    md_content = "\n".join(md_lines)
-    
-    # Create download link
-    st.download_button(
-        label="Download Chat",
-        data=md_content,
-        file_name=f"chat_session_{strftime('%Y%m%d_%H%M%S')}.md",
-        mime="text/markdown",
-        key="download_chat"  # Add unique key
-    )
+# Add activity log section in sidebar
+st.sidebar.markdown("##### Activity Log")
 
-def handle_insert(content):
-    """Handle document insertion."""
-    if st.session_state.rag is not None:
-        try:
-            with st.spinner("Inserting content..."):
-                with get_event_loop_context() as loop:
-                    success = loop.run_until_complete(st.session_state.rag.ainsert(content))
-                    
-                    if success:
-                        st.success("Content inserted successfully!")
-                    else:
-                        st.error("Failed to insert content")
-                        
-        except Exception as e:
-            logger.exception("An error occurred during insertion.")
-            st.error(f"An error occurred: {e}")
+# Create a sidebar container for activity logs
+activity_container = st.sidebar.container()
 
-# UI Layout
-st.markdown("### [LightRAG](https://github.com/HKUDS/LightRAG) [Kwaai](https://www.kwaai.ai/) Day Demo [🔗](https://lightrag.streamlit.app) #alpha")
-
-# Create a container for chat history and AI output
-chat_container = st.container()
-
-# After initializing RAG, display initial stats
-with chat_container: 
-    if not st.session_state.initialized:
-        init_rag()
-
-# Create dialog functions using the decorator pattern
+# Define all dialog functions first
 @st.dialog("Insert Records")
 def show_insert_dialog():
     """Dialog for inserting records from various sources."""
@@ -316,7 +291,7 @@ def show_insert_dialog():
         with col2:
             if st.button("Insert LightRAG Paper"):
                 try:
-                    with open("dickens/imports/2410.05779v2-LightRAG.pdf", "rb") as f:
+                    with open("dickens/inbox/2410.05779v2-LightRAG.pdf", "rb") as f:
                         pdf_reader = PyPDF2.PdfReader(f)
                         content = []
                         for page in pdf_reader.pages:
@@ -348,17 +323,17 @@ def show_settings_dialog():
         st.session_state.settings["api_key"] = api_key
         st.session_state.initialized = False
     
-    # Add model selection dropdowns
+    # Update model selection dropdowns with separate options
     st.session_state.settings["llm_model"] = st.selectbox(
         "LLM Model:",
-        ["gpt-4o-mini"],  # Add more models as they become available
-        index=0
+        AVAILABLE_LLM_MODELS,
+        index=AVAILABLE_LLM_MODELS.index(st.session_state.settings["llm_model"])
     )
     
     st.session_state.settings["embedding_model"] = st.selectbox(
         "Embedding Model:",
-        ["gpt-4o-mini"],  # Add more models as they become available
-        index=0
+        AVAILABLE_EMBEDDER_MODELS,
+        index=AVAILABLE_EMBEDDER_MODELS.index(st.session_state.settings["embedding_model"])
     )
     
     st.session_state.settings["search_mode"] = st.selectbox(
@@ -384,148 +359,18 @@ def show_settings_dialog():
         handle_settings_update()
         st.rerun()
 
-# Display chat history in the container
-with chat_container:
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            col1, col2 = st.columns([20, 1])
-            with col1:
-                st.write(message["content"])
-            with col2:
-                if "metadata" in message:
-                    metadata = message["metadata"]
-                    info_text = f"""
-                    🕒 {metadata.get('timestamp', 'N/A')}
-
-                    **Settings:**
-                    • Search: {metadata.get('search_mode', 'N/A')}
-                    • LLM: {metadata.get('llm_model', 'N/A')}
-                    • Embedder: {metadata.get('embedding_model', 'N/A')}
-                    • Temperature: {metadata.get('temperature', 'N/A')}
-                    """
-                    st.button("ℹ️", key=f"info_{message.get('timestamp', id(message))}", help=info_text)
-
-# Create a container for input and controls at the bottom
-with st.container():
-    # Add a visual separator
-    st.markdown("---")
-    
-    # Input and controls in a row
-    col1, col2, col3, col4, col5 = st.columns([8, 1, 1, 1, 1])
-
-    with col1:
-        prompt = st.chat_input("Ask a question about your records...")
-
-    with col2:
-        if st.button("📁", help="Insert Records"):
-            show_insert_dialog()
-
-    with col3:
-        if st.button("⚙️", help="Settings"):
-            show_settings_dialog()
-
-    with col4:
-        if st.button("🕸️", help="Knowledge Graph Stats"):
-            show_kg_stats_dialog()
-
-    with col5:
-        if st.button("📥", help="Download Options"):
-            show_download_dialog()
-
-# Handle chat input
-if prompt:
-    # Add user message with timestamp
-    from time import strftime
-    timestamp = strftime("%Y-%m-%d %H:%M:%S")
-    date_short = strftime("%Y%m%d")
-    prompt_hash = xxhash.xxh64(prompt.encode()).hexdigest()[:8]
-    
-    st.session_state.messages.append({
-        "role": "user", 
-        "content": prompt,
-        "metadata": {
-            "timestamp": timestamp
-        }
-    })
-    
-    # Generate response
-    with st.chat_message("assistant"):
-        status_placeholder = st.empty()
-        
-        with status_placeholder.status("Searching and generating response..."):
-            query_param = QueryParam(mode=st.session_state.settings["search_mode"])
-            try:
-                with get_event_loop_context() as loop:
-                    response = loop.run_until_complete(st.session_state.rag.aquery(prompt, param=query_param))
-                
-                # Add assistant message with timestamp
-                timestamp = strftime("%Y-%m-%d %H:%M:%S")
-                
-                # Create query info string
-                query_info = f"{st.session_state.settings['search_mode']}@{st.session_state.settings['llm_model']} #ds/{prompt_hash}/{date_short}"
-                
-                # Replace status with expander
-                with status_placeholder.expander(query_info, expanded=False):
-                    st.write("**Query Details:**")
-                    st.write(f"- Search Mode: {st.session_state.settings['search_mode']}")
-                    st.write(f"- LLM Model: {st.session_state.settings['llm_model']}")
-                    st.write(f"- Embedding Model: {st.session_state.settings['embedding_model']}")
-                    st.write(f"- Temperature: {st.session_state.settings['temperature']}")
-                    st.write(f"- Timestamp: {timestamp}")
-                    st.write(f"- Prompt Hash: {prompt_hash}")
-                
-                # Add response with metadata
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": response,
-                    "metadata": {
-                        "timestamp": timestamp,
-                        "search_mode": st.session_state.settings["search_mode"],
-                        "llm_model": st.session_state.settings["llm_model"],
-                        "embedding_model": st.session_state.settings["embedding_model"],
-                        "temperature": st.session_state.settings["temperature"],
-                        "prompt_hash": prompt_hash,
-                        "query_info": query_info
-                    }
-                })
-                
-                st.write(response)
-                
-            except Exception as e:
-                error_msg = f"Error generating response: {str(e)}"
-                logger.error(error_msg)
-                st.error(error_msg)
-                fallback_response = "I apologize, but I encountered an error while processing your request."
-                
-                # Add error response to messages
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": fallback_response,
-                    "metadata": {
-                        "timestamp": timestamp,
-                        "search_mode": st.session_state.settings["search_mode"],
-                        "llm_model": st.session_state.settings["llm_model"],
-                        "embedding_model": st.session_state.settings["embedding_model"],
-                        "error": str(e)
-                    }
-                })
-                
-                st.write(fallback_response)
-
-@st.dialog("Knowledge Graph Stats")
+@st.dialog("Knowledge Graph Stats", width="large")
 def show_kg_stats_dialog():
-    """Dialog showing detailed knowledge graph statistics."""
+    """Dialog showing detailed knowledge graph statistics and visualization."""
     try:
-        if st.session_state.rag is None:
-            st.error("Knowledge Graph not initialized yet")
+        # Use the correct filename in dickens directory
+        graph_path = "./dickens/graph_chunk_entity_relation.graphml"
+        
+        if not os.path.exists(graph_path):
+            st.markdown("> [!graph] ⚠️ **Knowledge Graph file not found.** Please insert some documents first.")
             return
             
-        # Get graph stats
-        graph = st.session_state.rag.chunk_entity_relation_graph._graph
-        
-        if graph is None:
-            st.error("Knowledge Graph is empty")
-            return
+        graph = nx.read_graphml(graph_path)
             
         # Basic stats
         stats = {
@@ -535,7 +380,7 @@ def show_kg_stats_dialog():
         }
         
         # Display stats with more detail
-        st.markdown("### Knowledge Graph Statistics")
+        st.markdown("## Knowledge Graph Statistics")
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -544,30 +389,158 @@ def show_kg_stats_dialog():
             st.metric("Total Edges", stats["Edges"])
         with col3:
             st.metric("Average Degree", stats["Average Degree"])
-            
-        # Add more detailed information
+        
+        # Add detailed analysis
+        st.markdown("## Graph Analysis")
+        
+        # Calculate additional metrics
         if stats["Nodes"] > 0:
-            st.markdown("### Node Degree Distribution")
+            density = nx.density(graph)
+            components = nx.number_connected_components(graph.to_undirected())
+            
+            st.markdown(f"""
+            - **Graph Density:** {density:.4f}
+            - **Connected Components:** {components}
+            - **Most Connected Nodes:**
+            """)
+                        
+            # Create table headers
+            table_lines = [
+                "| Node ID | SHA-12 | Connections |",
+                "|---------|--------|-------------|"
+            ]
+            
+            # Add rows for top nodes
             degrees = dict(graph.degree())
-            degree_dist = {}
-            for d in degrees.values():
-                degree_dist[d] = degree_dist.get(d, 0) + 1
+            top_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)[:5]
+            for node, degree in top_nodes:
+                # Get first 12 chars of SHA hash
+                sha_hash = xxhash.xxh64(node.encode()).hexdigest()[:12]
+                table_lines.append(f"| `{node}` | `{sha_hash}` | {degree} |")
             
-            # Create a bar chart of degree distribution
-            import plotly.graph_objects as go
-            fig = go.Figure(data=[
-                go.Bar(x=list(degree_dist.keys()), y=list(degree_dist.values()))
-            ])
-            fig.update_layout(
-                title="Node Degree Distribution",
-                xaxis_title="Degree",
-                yaxis_title="Count"
-            )
-            st.plotly_chart(fig)
+            # Display the table
+            st.markdown("\n".join(table_lines))
+        
+        # Generate visualization if there are nodes
+        if stats["Nodes"] > 0:
+            st.markdown("## Knowledge Graph Visualization")
             
+            try:
+                from pyvis.network import Network
+                import random
+                
+                st.markdown("*Generating interactive network visualization...*")
+                
+                net = Network(height="600px", width="100%", notebook=True)
+                net.from_nx(graph)
+                
+                # Apply visual styling
+                for node in net.nodes:
+                    node["color"] = "#{:06x}".format(random.randint(0, 0xFFFFFF))
+                
+                # Save and display using the same filename pattern
+                html_path = "./dickens/graph_chunk_entity_relation.html"
+                net.save_graph(html_path)
+                
+                # Display the saved HTML
+                with open(html_path, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+                st.components.v1.html(html_content, height=600)
+                    
+            except ImportError:
+                st.markdown("⚠️ Please install pyvis to enable graph visualization: `pip install pyvis`")
+            except Exception as e:
+                st.markdown(f"❌ **Error generating visualization:** {str(e)}")
+        
     except Exception as e:
         logger.error(f"Error getting graph stats: {str(e)}")
-        st.error(f"Error getting graph stats: {str(e)}")
+        st.markdown(f"❌ **Error getting graph stats:** {str(e)}")
+
+# Move this function before the dialog definitions
+def handle_chat_download():
+    """Download chat history as markdown."""
+    if not st.session_state.messages:
+        st.error("No messages to download yet! Start a conversation first.", icon="ℹ️")
+        return
+        
+    from time import strftime
+    
+    # Create markdown content
+    md_lines = [
+        "# LightRAG Chat Session\n",
+        f"*Exported on {strftime('%Y-%m-%d %H:%M:%S')}*\n",
+        "\n## Settings\n",
+        f"- Search Mode: {st.session_state.settings['search_mode']}",
+        f"- LLM Model: {st.session_state.settings['llm_model']}",
+        f"- Embedding Model: {st.session_state.settings['embedding_model']}",
+        f"- Temperature: {st.session_state.settings['temperature']}",
+        f"- System Message: {st.session_state.settings['system_message']}\n",
+        "\n## Conversation\n"
+    ]
+    
+    # Add messages
+    for msg in st.session_state.messages:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        md_lines.append(f"\n### {role} ({msg['metadata'].get('timestamp', 'N/A')})")
+        md_lines.append(f"\n{msg['content']}\n")
+        
+        if msg["role"] == "assistant" and "metadata" in msg:
+            metadata = msg["metadata"]
+            if "query_info" in metadata:
+                md_lines.append(f"\n> {metadata['query_info']}")
+            if "error" in metadata:
+                md_lines.append(f"\n> ⚠️ Error: {metadata['error']}")
+    
+    md_content = "\n".join(md_lines)
+    
+    st.download_button(
+        label="Download Chat",
+        data=md_content,
+        file_name=f"chat_session_{strftime('%Y%m%d_%H%M%S')}.md",
+        mime="text/markdown",
+        key="download_chat"
+    )
+
+def get_all_records_from_graph():
+    """Extract records from the knowledge graph."""
+    try:
+        graph_path = "./dickens/graph_chunk_entity_relation.graphml"
+        if not os.path.exists(graph_path):
+            return []
+            
+        graph = nx.read_graphml(graph_path)
+        
+        records = []
+        for node in graph.nodes(data=True):
+            node_id, data = node
+            if data.get('type') == 'chunk':
+                record = {
+                    'id': node_id,
+                    'content': data.get('content', ''),
+                    'metadata': {
+                        'type': data.get('type', ''),
+                        'timestamp': data.get('timestamp', ''),
+                        'relationships': []
+                    }
+                }
+                
+                # Get relationships
+                for edge in graph.edges(node_id, data=True):
+                    source, target, edge_data = edge
+                    if edge_data:
+                        record['metadata']['relationships'].append({
+                            'target': target,
+                            'type': edge_data.get('type', ''),
+                            'weight': edge_data.get('weight', 1.0)
+                        })
+                
+                records.append(record)
+        
+        return records
+        
+    except Exception as e:
+        logger.error(f"Error reading graph file: {str(e)}")
+        return []
 
 @st.dialog("Download Options")
 def show_download_dialog():
@@ -588,8 +561,8 @@ def show_download_dialog():
                     st.error("No records available. Initialize RAG first.")
                     return
                     
-                # Get records from RAG
-                records = st.session_state.rag.get_all_records()
+                # Get records from graph
+                records = get_all_records_from_graph()
                 
                 if not records:
                     st.warning("No records found to download.")
@@ -609,6 +582,183 @@ def show_download_dialog():
                     mime="application/json"
                 )
                 
+                # Log success
+                add_activity_log(f"[↓] Downloaded {len(records)} records")
+                
             except Exception as e:
                 logger.error(f"Error downloading records: {str(e)}")
                 st.error(f"Error downloading records: {str(e)}")
+                add_activity_log(f"[!] Download error: {str(e)}")
+
+# Now add the buttons after all dialogs are defined
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    if st.button("➕", help="Insert Records"):
+        show_insert_dialog()
+
+with col2:
+    if st.button("⚙", help="Settings"):
+        show_settings_dialog()
+
+with col3:
+    if st.button("፨", help="Knowledge Graph Stats"):
+        show_kg_stats_dialog()
+
+with col4:
+    if st.button("⬇", help="Download Options"):
+        show_download_dialog()
+
+# Create a container for chat history and AI output with border
+chat_container = st.container(border=True)
+
+# Add after the model constants but before session state initialization
+def add_activity_log(message: str):
+    """Add an entry to the activity log and display in sidebar."""
+    # Initialize activity log if not exists
+    if "activity_log" not in st.session_state:
+        st.session_state.activity_log = []
+        
+    # Add new message
+    st.session_state.activity_log.append(message)
+    
+    # Keep only last 50 entries to prevent too much history
+    st.session_state.activity_log = st.session_state.activity_log[-50:]
+    
+    # Update sidebar display
+    with activity_container:
+        st.markdown(f"```\n{message}\n```")
+
+# Initialize session state with API key
+if "initialized" not in st.session_state:
+    st.session_state.initialized = False
+    st.session_state.settings = {
+        "search_mode": "hybrid",
+        "llm_model": DEFAULT_LLM_MODEL,
+        "embedding_model": DEFAULT_EMBEDDER_MODEL,
+        "system_message": "You are a helpful AI assistant that answers questions based on the provided documents.",
+        "temperature": 0.7,
+        "api_key": os.getenv("OPENAI_API_KEY", "")
+    }
+    st.session_state.rag = None
+    st.session_state.messages = []
+    st.session_state.activity_log = []
+    
+    # Add notice about API key source
+    if st.session_state.settings["api_key"]:
+        add_activity_log("ℹ️ Using OpenAI API key from environment")
+
+# After initializing RAG, display initial stats
+with chat_container: 
+    if not st.session_state.initialized:
+        init_rag()
+
+# Define helper functions first
+def handle_settings_update():
+    """Update settings and force RAG reinitialization."""
+    st.session_state.initialized = False  # Force reinitialization
+
+# Add a visual separator for action footer
+if prompt := st.chat_input("Ask a question about your records..."):
+    # Input and controls in a row
+    col1 = st.columns([1])[0]  # Simplified to just show the prompt
+    with col1:
+        st.write(prompt)
+
+# Handle chat input
+if prompt:
+    add_activity_log(f"[?] Q: {prompt[:50]}..." if len(prompt) > 50 else f"[?] Q: {prompt}")
+    
+    # Generate response
+    with st.chat_message("assistant"):
+        status_placeholder = st.empty()
+        
+        with status_placeholder.status("Searching and generating response..."):
+            query_param = QueryParam(mode=st.session_state.settings["search_mode"])
+            try:
+                with get_event_loop_context() as loop:
+                    response = loop.run_until_complete(st.session_state.rag.aquery(prompt, param=query_param))
+                
+                # Create query info string
+                prompt_hash = xxhash.xxh64(prompt.encode()).hexdigest()[:8]
+                query_info = f"{st.session_state.settings['search_mode']}@{st.session_state.settings['llm_model']} #{prompt_hash}"
+                
+                # Replace status with expander
+                with status_placeholder.expander(query_info, expanded=False):
+                    st.write("**Query Details:**")
+                    st.write(f"- Search Mode: {st.session_state.settings['search_mode']}")
+                    st.write(f"- LLM Model: {st.session_state.settings['llm_model']}")
+                    st.write(f"- Embedding Model: {st.session_state.settings['embedding_model']}")
+                    st.write(f"- Temperature: {st.session_state.settings['temperature']}")
+                    st.write(f"- Prompt Hash: {prompt_hash}")
+                
+                # Add response with metadata
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": response,
+                    "metadata": {
+                        "timestamp": time.strftime('%H:%M:%S'),  # Use time.strftime instead of datetime
+                        "search_mode": st.session_state.settings["search_mode"],
+                        "llm_model": st.session_state.settings["llm_model"],
+                        "embedding_model": st.session_state.settings["embedding_model"],
+                        "temperature": st.session_state.settings["temperature"],
+                        "prompt_hash": prompt_hash,
+                        "query_info": query_info
+                    }
+                })
+                
+                st.write(response)
+                
+                # Log the response in activity log (moved inside try block)
+                add_activity_log(f"[@] A: {response[:50]}..." if len(response) > 50 else f"[@] A: {response}")
+                
+            except Exception as e:
+                error_msg = f"Error generating response: {str(e)}"
+                logger.error(error_msg)
+                add_activity_log(f"[!] {error_msg}")
+                fallback_response = "I apologize, but I encountered an error while processing your request."
+                
+                # Add error response to messages
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": fallback_response,
+                    "metadata": {
+                        "search_mode": st.session_state.settings["search_mode"],
+                        "llm_model": st.session_state.settings["llm_model"],
+                        "embedding_model": st.session_state.settings["embedding_model"],
+                        "error": str(e)
+                    }
+                })
+                
+                st.write(fallback_response)
+                
+                # Log the error in activity log
+                add_activity_log(f"[!] {error_msg}")
+
+# Modify handle_insert to use add_activity_log
+def handle_insert(content):
+    """Handle document insertion."""
+    if st.session_state.rag is not None:
+        try:
+            # First verify API key is working
+            if not test_api_key():
+                return
+                
+            with st.spinner("Inserting content..."):
+                # Log the content size for debugging
+                add_activity_log(f"[*] Processing content ({len(content)} chars)...")
+                
+                with get_event_loop_context() as loop:
+                    success = loop.run_until_complete(st.session_state.rag.ainsert(content))
+                    
+                    if success:
+                        st.success("Content inserted successfully!")
+                        add_activity_log(f"[+] Added content ({len(content)} chars)")
+                    else:
+                        st.error("Failed to insert content - no relationships extracted")
+                        add_activity_log("[-] Failed to extract relationships from content")
+                        
+        except Exception as e:
+            logger.exception("An error occurred during insertion.")
+            st.error(f"An error occurred: {e}")
+            add_activity_log(f"[!] Insert error: {str(e)}")
