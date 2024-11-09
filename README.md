@@ -48,6 +48,18 @@ pip install -e .
 pip install lightrag-hku
 ```
 
+### Setup Env
+
+```bash
+export OPENAI_API_KEY="sk-..."
+poetry init
+
+poetry install
+
+# Run example
+poetry run streamlit run ui-examples/streamlit-import-query-lightrag.py
+```
+
 ## Quick Start
 * [Video demo](https://www.youtube.com/watch?v=g21royNJ4fw) of running LightRAG locally.
 * All the code can be found in the `examples`.
