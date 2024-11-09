@@ -1,6 +1,8 @@
 __pycache__
 *.egg-info
 dickens/
+!dickens/inbox/book.txt
+!dickens/inbox/2410.05779v2-LightRAG.pdf
 book.txt
 lightrag-dev/
 .idea/
