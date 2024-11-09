@@ -21,190 +21,134 @@ def get_event_loop_context():
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-# Create working directory first
+# Import LightRAG packages
+from lightrag import LightRAG, QueryParam
+from lightrag.llm import gpt_4o_mini_complete, openai_embedding
+from lightrag.utils import EmbeddingFunc, logger, set_logger
+
+# Configure logging
 working_dir = "./dickens"
 if not os.path.exists(working_dir):
     os.makedirs(working_dir)
-
-# Configure logger after working directory exists
-logger = logging.getLogger("lightrag")
-logger.setLevel(logging.DEBUG)  # Set to DEBUG for more detailed logs
-
-# Configure httpx logger to be less verbose
-httpx_logger = logging.getLogger("httpx")
-httpx_logger.setLevel(logging.WARNING)  # Only show WARNING and above
-
-# Create handlers if they don't exist
-if not logger.handlers:
-    # File handler
-    log_file = os.path.join(working_dir, "lightrag.log")
-    fh = logging.FileHandler(log_file)
-    fh.setLevel(logging.INFO)
-    file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    fh.setFormatter(file_formatter)
-    logger.addHandler(fh)
     
-    # Console handler
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(console_formatter)
-    logger.addHandler(ch)
+set_logger(os.path.join(working_dir, "lightrag.log"))
+logger.setLevel(logging.DEBUG)
 
 # Rest of the imports
 import streamlit as st
-from lightrag import LightRAG, QueryParam
-from lightrag.llm import ollama_embedding, gpt_4o_mini_complete, ollama_model_complete
-from lightrag.utils import EmbeddingFunc
 
 # Define helper functions first
 def get_llm_config(model_name):
     """Get the LLM configuration based on model name."""
-    common_kwargs = {
-        "host": "http://localhost:11434",
-        "options": {"num_ctx": 32768}
-    }
-    
     if model_name == "gpt-4o-mini":
-        # Don't pass host parameter to OpenAI functions
         return gpt_4o_mini_complete, "gpt-4o-mini"
-    elif model_name in ["gemma2:2b", "mistral", "llama2"]:
-        # Only pass host parameter to Ollama functions
-        return (
-            lambda prompt: asyncio.run(ollama_complete(model_name, prompt, **common_kwargs)),
-            model_name
-        )
     else:
         raise ValueError(f"Unsupported LLM model: {model_name}")
 
 def get_embedding_config(model_name):
     """Get the embedding configuration based on model name."""
-    if model_name == "nomic-embed-text":
-        # First get a sample embedding to determine the actual dimension
-        import ollama
-        client = ollama.Client(host="http://localhost:11434")
-        sample_embedding = client.embeddings(
-            model="nomic-embed-text",
-            prompt="test"
-        )
-        actual_dim = len(sample_embedding["embedding"])
-        
+    if model_name == "gpt-4o-mini":
         return EmbeddingFunc(
-            embedding_dim=actual_dim,
+            embedding_dim=1536,  # Ada 002 embedding dimension
             max_token_size=8192,
-            func=lambda texts: ollama_embedding(
+            func=lambda texts: openai_embedding(
                 texts,
-                embed_model="nomic-embed-text",
-                host="http://localhost:11434"
+                model="gpt-4o-mini",  # Changed from text-embedding-ada-002
+                api_key=st.session_state.settings["api_key"]
             )
         )
     else:
         raise ValueError(f"Unsupported embedding model: {model_name}")
 
-async def ollama_complete(model_name, prompt, **kwargs):
-    """Helper function for Ollama completion."""
-    import ollama
-    client = ollama.AsyncClient(**kwargs)
-    response = await client.generate(model=model_name, prompt=prompt)
-    return response['choices'][0]['text']
-
-def test_ollama_embedding():
-    """Test if Ollama embedding service is running and accessible."""
+def test_api_key():
+    """Test if OpenAI API key is valid and prompt for input if invalid."""
+    if not st.session_state.settings["api_key"]:
+        st.error("""
+        ⚠️ OpenAI API key is required.
+        Please enter your API key in the form below.
+        """)
+        show_api_key_form()
+        return False
+        
     try:
-        import ollama
-        client = ollama.Client(host="http://localhost:11434")
+        from openai import OpenAI
+        client = OpenAI(api_key=st.session_state.settings["api_key"])
+        
         # Try a simple embedding request
-        client.embeddings(model="nomic-embed-text", prompt="test")
+        response = client.embeddings.create(
+            input="test",
+            model="gpt-4o-mini"
+        )
         return True
+        
     except Exception as e:
         st.error(f"""
-        ⚠️ Cannot connect to Ollama embedding service. Please ensure:
-        1. Ollama is installed and running (http://localhost:11434)
-        2. The nomic-embed-text model is installed
-        
-        Run: `ollama pull nomic-embed-text`
+        ⚠️ API Error. Please ensure:
+        1. You have entered a valid OpenAI API key
+        2. Your API key has access to the gpt-4o-mini model
         
         Error details: {str(e)}
         """)
+        
+        show_api_key_form()
         return False
 
-def display_kg_stats():
-    """Display knowledge graph statistics in a popover."""
-    try:
-        # Get graph stats - access through the correct attribute name
-        graph = st.session_state.rag.chunk_entity_relation_graph._graph
+def show_api_key_form():
+    """Display the API key input form."""
+    with st.form("api_key_form"):
+        new_api_key = st.text_input(
+            "Enter your OpenAI API key:",
+            type="password",
+            help="Get your API key from https://platform.openai.com/account/api-keys"
+        )
         
-        stats = {
-            "Nodes": graph.number_of_nodes(),
-            "Edges": graph.number_of_edges(),
-            "Average Degree": round(sum(dict(graph.degree()).values()) / graph.number_of_nodes(), 2) if graph.number_of_nodes() > 0 else 0
-        }
+        submitted = st.form_submit_button("Save API Key")
         
-        # Log the stats
-        logger.info(f"Knowledge Graph Stats - Nodes: {stats['Nodes']}, Edges: {stats['Edges']}, Avg Degree: {stats['Average Degree']}")
-        
-        # Create stats text for popover
-        stats_text = f"""
-        - Nodes: {stats['Nodes']}
-        - Edges: {stats['Edges']}
-        - Average Degree: {stats['Average Degree']}
-        """
-        
-        # Display as a popover button
-        st.button("🕸️", help=stats_text)
-            
-    except Exception as e:
-        logger.error(f"Error getting graph stats: {str(e)}")
-        # Add more detailed error information
-        if st.session_state.rag is None:
-            logger.error("RAG instance is None")
-        else:
-            logger.error(f"Available RAG attributes: {dir(st.session_state.rag)}")
+        if submitted and new_api_key:
+            st.session_state.settings["api_key"] = new_api_key
+            st.session_state.initialized = False
+            st.rerun()
 
-# Initialize session state
+# Initialize session state with API key
 if "initialized" not in st.session_state:
     st.session_state.initialized = False
-    st.session_state.messages = []
     st.session_state.settings = {
         "search_mode": "hybrid",
         "llm_model": "gpt-4o-mini",
-        "embedding_model": "nomic-embed-text",
+        "embedding_model": "gpt-4o-mini",
         "system_message": "You are a helpful AI assistant that answers questions based on the provided documents.",
-        "temperature": 0.7
+        "temperature": 0.7,
+        "api_key": "",
+        "query_settings": {
+            "max_chunks": 5,
+            "chunk_similarity_threshold": 0.7,
+            "entity_similarity_threshold": 0.7,
+            "relationship_similarity_threshold": 0.7
+        }
     }
     st.session_state.rag = None
+    st.session_state.messages = []
 
 # Function to initialize/reinitialize RAG
 def init_rag():
-    # Test Ollama embedding service first
-    if not test_ollama_embedding():
-        st.stop()
+    if not test_api_key():  # Test API key before initializing
+        return False
         
     working_dir = "./dickens"
     
-    # Create working directory if it doesn't exist
     if not os.path.exists(working_dir):
         os.makedirs(working_dir)
     
     # Initialize RAG with current settings
     llm_func, llm_name = get_llm_config(st.session_state.settings["llm_model"])
     embedding_config = get_embedding_config(st.session_state.settings["embedding_model"])
-    
-    # Separate kwargs based on model type
-    if st.session_state.settings["llm_model"] == "gpt-4o-mini":
-        llm_kwargs = {
-            "temperature": st.session_state.settings["temperature"],
-            "system_prompt": st.session_state.settings["system_message"]
-        }
-    else:
-        llm_kwargs = {
-            "host": "http://localhost:11434", 
-            "options": {
-                "num_ctx": 32768,
-                "temperature": st.session_state.settings["temperature"]
-            },
-            "system_message": st.session_state.settings["system_message"]
-        }
+        
+    llm_kwargs = {
+        "temperature": st.session_state.settings["temperature"],
+        "system_prompt": st.session_state.settings["system_message"],
+        "api_key": st.session_state.settings["api_key"],  # Pass API key to LLM
+        **st.session_state.settings["query_settings"]  # Add query settings
+    }
     
     st.session_state.rag = LightRAG(
         working_dir=working_dir,
@@ -216,6 +160,7 @@ def init_rag():
         embedding_func=embedding_config
     )
     st.session_state.initialized = True
+    return True
 
 # Callback functions
 def handle_settings_update():
@@ -272,51 +217,38 @@ def handle_chat_download():
         key="download_chat"  # Add unique key
     )
 
-def handle_import(content):
-    """Handle document import."""
+def handle_insert(content):
+    """Handle document insertion."""
     if st.session_state.rag is not None:
         try:
-            with st.spinner("Importing content..."):
+            with st.spinner("Inserting content..."):
                 with get_event_loop_context() as loop:
                     success = loop.run_until_complete(st.session_state.rag.ainsert(content))
                     
                     if success:
-                        st.success("Content imported successfully!")
+                        st.success("Content inserted successfully!")
                     else:
-                        st.error("Failed to import content")
+                        st.error("Failed to insert content")
                         
         except Exception as e:
-            logger.exception("An error occurred during import.")
+            logger.exception("An error occurred during insertion.")
             st.error(f"An error occurred: {e}")
 
-# After initializing RAG, display initial stats
-if not st.session_state.initialized:
-    init_rag()
-
 # UI Layout
-st.markdown("# [LightRAG](https://github.com/HKUDS/LightRAG) [Kwaai](https://www.kwaai.ai/) Day Demo [🔗](https://lightrag.streamlit.app)")
+st.markdown("### [LightRAG](https://github.com/HKUDS/LightRAG) [Kwaai](https://www.kwaai.ai/) Day Demo [🔗](https://lightrag.streamlit.app) #alpha")
 
-# Input and controls
-col1, col2, col3, col4, col5 = st.columns([8, 1, 1, 1, 1])
+# Create a container for chat history and AI output
+chat_container = st.container()
 
-with col1:
-    prompt = st.chat_input("Ask a question about your documents...")
+# After initializing RAG, display initial stats
+with chat_container: 
+    if not st.session_state.initialized:
+        init_rag()
 
-with col2:
-    display_kg_stats()
-
-with col3:
-    import_dialog = st.toggle("📄", help="Documents")
-
-with col4:
-    settings_dialog = st.toggle("⚙️", help="Settings")
-
-with col5:
-    st.button("📥", help="Download Chat", on_click=handle_chat_download)
-
-# Add dialog content after the columns
-if import_dialog:
-    # Import dialog content
+# Create dialog functions using the decorator pattern
+@st.dialog("Insert Records")
+def show_insert_dialog():
+    """Dialog for inserting records from various sources."""
     tags = st.text_input(
         "Tags (optional):",
         help="Add comma-separated tags to help organize your documents"
@@ -331,9 +263,9 @@ if import_dialog:
             help="Paste your document content here"
         )
         
-        if st.button("Import", key="import_text"):
+        if st.button("Insert", key="insert"):
             if text_input:
-                handle_import(text_input)
+                handle_insert(text_input)
     
     with tab2:
         uploaded_file = st.file_uploader(
@@ -343,29 +275,29 @@ if import_dialog:
         )
         
         if uploaded_file is not None:
-            if st.button("Import File", key="import_file"):
+            if st.button("Insert File", key="insert_file"):
                 try:
                     content = uploaded_file.read()
                     if isinstance(content, bytes):
                         content = content.decode('utf-8')
-                    handle_import(content)
+                    handle_insert(content)
                 except Exception as e:
-                    st.error(f"Error importing file: {str(e)}")
+                    st.error(f"Error inserting file: {str(e)}")
     
     with tab3:
         url = st.text_input(
             "Website URL:",
-            help="Enter the URL of the webpage you want to import"
+            help="Enter the URL of the webpage you want to insert"
         )
         
-        if st.button("Import", key="import_url"):
+        if st.button("Insert", key="insert_url"):
             if url:
                 try:
                     response = requests.get(url)
                     response.raise_for_status()
-                    handle_import(response.text)
+                    handle_insert(response.text)
                 except Exception as e:
-                    st.error(f"Error importing website: {str(e)}")
+                    st.error(f"Error inserting website content: {str(e)}")
     
     with tab4:
         st.markdown("### Test Documents")
@@ -373,19 +305,18 @@ if import_dialog:
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("Import A Christmas Carol"):
+            if st.button("Insert A Christmas Carol"):
                 try:
                     with open("dickens/imports/book.txt", "r", encoding="utf-8") as f:
                         content = f.read()
-                        handle_import(content)
+                        handle_insert(content)
                 except Exception as e:
-                    st.error(f"Error importing Dickens test book: {str(e)}")
+                    st.error(f"Error inserting Dickens test book: {str(e)}")
         
         with col2:
-            if st.button("Import LightRAG Paper"):
+            if st.button("Insert LightRAG Paper"):
                 try:
                     with open("dickens/imports/2410.05779v2-LightRAG.pdf", "rb") as f:
-                        import PyPDF2
                         pdf_reader = PyPDF2.PdfReader(f)
                         content = []
                         for page in pdf_reader.pages:
@@ -397,75 +328,109 @@ if import_dialog:
                             st.error("No text could be extracted from the PDF")
                         else:
                             combined_content = "\n\n".join(content)
-                            handle_import(combined_content)
+                            handle_insert(combined_content)
                 except FileNotFoundError:
                     st.error("PDF file not found. Please ensure the file exists in dickens/imports/")
                 except Exception as e:
-                    st.error(f"Error importing LightRAG whitepaper: {str(e)}")
+                    st.error(f"Error inserting LightRAG whitepaper: {str(e)}")
 
-# Add these helper functions before the settings dialog
-def get_system_message():
-    return st.text_area(
-        "System Message:",
-        value=st.session_state.settings["system_message"],
-        help="Customize the AI assistant's behavior"
+@st.dialog("Settings")
+def show_settings_dialog():
+    """Dialog for configuring LightRAG settings."""
+    # Add API key input at the top
+    api_key = st.text_input(
+        "OpenAI API Key:",
+        value=st.session_state.settings["api_key"],
+        type="password",
+        help="Enter your OpenAI API key"
     )
-
-def get_temperature():
-    return st.slider(
-        "Temperature:",
-        min_value=0.0,
-        max_value=1.0,
-        value=st.session_state.settings["temperature"],
-        step=0.1,
-        help="Controls randomness in responses. Lower values are more focused, higher values more creative."
+    if api_key != st.session_state.settings["api_key"]:
+        st.session_state.settings["api_key"] = api_key
+        st.session_state.initialized = False
+    
+    # Add model selection dropdowns
+    st.session_state.settings["llm_model"] = st.selectbox(
+        "LLM Model:",
+        ["gpt-4o-mini"],  # Add more models as they become available
+        index=0
     )
-
-# Then the settings dialog can use them
-if settings_dialog:
-    # Settings dialog content
+    
+    st.session_state.settings["embedding_model"] = st.selectbox(
+        "Embedding Model:",
+        ["gpt-4o-mini"],  # Add more models as they become available
+        index=0
+    )
+    
     st.session_state.settings["search_mode"] = st.selectbox(
         "Search mode:",
         ["naive", "local", "global", "hybrid"],
         index=["naive", "local", "global", "hybrid"].index(st.session_state.settings["search_mode"])
     )
     
-    st.session_state.settings["llm_model"] = st.selectbox(
-        "LLM Model:",
-        ["gpt-4o-mini", "gemma2:2b", "mistral", "llama2"],
-        index=["gpt-4o-mini", "gemma2:2b", "mistral", "llama2"].index(st.session_state.settings["llm_model"])
+    st.session_state.settings["temperature"] = st.slider(
+        "Temperature:",
+        min_value=0.0,
+        max_value=1.0,
+        value=st.session_state.settings["temperature"],
+        step=0.1
     )
     
-    st.session_state.settings["embedding_model"] = st.selectbox(
-        "Embedding Model:",
-        ["nomic-embed-text"],
-        index=["nomic-embed-text"].index(st.session_state.settings["embedding_model"])
+    st.session_state.settings["system_message"] = st.text_area(
+        "System Message:",
+        value=st.session_state.settings["system_message"]
     )
     
-    st.session_state.settings["system_message"] = get_system_message()
-    st.session_state.settings["temperature"] = get_temperature()
+    if st.button("Apply Settings"):
+        handle_settings_update()
+        st.rerun()
+
+# Display chat history in the container
+with chat_container:
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            col1, col2 = st.columns([20, 1])
+            with col1:
+                st.write(message["content"])
+            with col2:
+                if "metadata" in message:
+                    metadata = message["metadata"]
+                    info_text = f"""
+                    🕒 {metadata.get('timestamp', 'N/A')}
+
+                    **Settings:**
+                    • Search: {metadata.get('search_mode', 'N/A')}
+                    • LLM: {metadata.get('llm_model', 'N/A')}
+                    • Embedder: {metadata.get('embedding_model', 'N/A')}
+                    • Temperature: {metadata.get('temperature', 'N/A')}
+                    """
+                    st.button("ℹ️", key=f"info_{message.get('timestamp', id(message))}", help=info_text)
+
+# Create a container for input and controls at the bottom
+with st.container():
+    # Add a visual separator
+    st.markdown("---")
     
-    st.button("Apply Settings", on_click=handle_settings_update)
+    # Input and controls in a row
+    col1, col2, col3, col4, col5 = st.columns([8, 1, 1, 1, 1])
 
-# Display chat history
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        col1, col2 = st.columns([20, 1])
-        with col1:
-            st.write(message["content"])
-        with col2:
-            if "metadata" in message:
-                metadata = message["metadata"]
-                info_text = f"""
-                🕒 {metadata.get('timestamp', 'N/A')}
+    with col1:
+        prompt = st.chat_input("Ask a question about your records...")
 
-                **Settings:**
-                • Search: {metadata.get('search_mode', 'N/A')}
-                • LLM: {metadata.get('llm_model', 'N/A')}
-                • Embeddings: {metadata.get('embedding_model', 'N/A')}
-                • Temperature: {metadata.get('temperature', 'N/A')}
-                """
-                st.button("ℹ️", key=f"info_{message.get('timestamp', id(message))}", help=info_text)
+    with col2:
+        if st.button("📁", help="Insert Records"):
+            show_insert_dialog()
+
+    with col3:
+        if st.button("⚙️", help="Settings"):
+            show_settings_dialog()
+
+    with col4:
+        if st.button("🕸️", help="Knowledge Graph Stats"):
+            show_kg_stats_dialog()
+
+    with col5:
+        if st.button("📥", help="Download Options"):
+            show_download_dialog()
 
 # Handle chat input
 if prompt:
@@ -546,3 +511,104 @@ if prompt:
                 })
                 
                 st.write(fallback_response)
+
+@st.dialog("Knowledge Graph Stats")
+def show_kg_stats_dialog():
+    """Dialog showing detailed knowledge graph statistics."""
+    try:
+        if st.session_state.rag is None:
+            st.error("Knowledge Graph not initialized yet")
+            return
+            
+        # Get graph stats
+        graph = st.session_state.rag.chunk_entity_relation_graph._graph
+        
+        if graph is None:
+            st.error("Knowledge Graph is empty")
+            return
+            
+        # Basic stats
+        stats = {
+            "Nodes": graph.number_of_nodes(),
+            "Edges": graph.number_of_edges(),
+            "Average Degree": round(sum(dict(graph.degree()).values()) / graph.number_of_nodes(), 2) if graph.number_of_nodes() > 0 else 0
+        }
+        
+        # Display stats with more detail
+        st.markdown("### Knowledge Graph Statistics")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Nodes", stats["Nodes"])
+        with col2:
+            st.metric("Total Edges", stats["Edges"])
+        with col3:
+            st.metric("Average Degree", stats["Average Degree"])
+            
+        # Add more detailed information
+        if stats["Nodes"] > 0:
+            st.markdown("### Node Degree Distribution")
+            degrees = dict(graph.degree())
+            degree_dist = {}
+            for d in degrees.values():
+                degree_dist[d] = degree_dist.get(d, 0) + 1
+            
+            # Create a bar chart of degree distribution
+            import plotly.graph_objects as go
+            fig = go.Figure(data=[
+                go.Bar(x=list(degree_dist.keys()), y=list(degree_dist.values()))
+            ])
+            fig.update_layout(
+                title="Node Degree Distribution",
+                xaxis_title="Degree",
+                yaxis_title="Count"
+            )
+            st.plotly_chart(fig)
+            
+    except Exception as e:
+        logger.error(f"Error getting graph stats: {str(e)}")
+        st.error(f"Error getting graph stats: {str(e)}")
+
+@st.dialog("Download Options")
+def show_download_dialog():
+    """Dialog for downloading chat history and records."""
+    st.markdown("### Download Options")
+    
+    tab1, tab2 = st.tabs(["Chat History", "Inserted Records"])
+    
+    with tab1:
+        st.markdown("Download the current chat session as a markdown file.")
+        handle_chat_download()
+    
+    with tab2:
+        st.markdown("Download all inserted records as a JSON file.")
+        if st.button("Download Records"):
+            try:
+                if st.session_state.rag is None:
+                    st.error("No records available. Initialize RAG first.")
+                    return
+                    
+                # Get records from RAG
+                records = st.session_state.rag.get_all_records()
+                
+                if not records:
+                    st.warning("No records found to download.")
+                    return
+                
+                import json
+                from time import strftime
+                
+                # Convert records to JSON
+                records_json = json.dumps(records, indent=2)
+                
+                # Create download button
+                st.download_button(
+                    label="Download JSON",
+                    data=records_json,
+                    file_name=f"lightrag_records_{strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
+                
+            except Exception as e:
+                logger.error(f"Error downloading records: {str(e)}")
+                st.error(f"Error downloading records: {str(e)}")
