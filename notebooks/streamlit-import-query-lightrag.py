@@ -341,7 +341,7 @@ def show_settings_dialog():
 
 @st.dialog("Knowledge Graph Stats")
 def show_kg_stats_dialog():
-    """Dialog showing detailed knowledge graph statistics."""
+    """Dialog showing detailed knowledge graph statistics and visualization."""
     try:
         # Use the saved graphml file path
         graphml_path = os.path.join("./dickens", "graph_chunk_entity_relation.graphml")
@@ -371,21 +371,79 @@ def show_kg_stats_dialog():
         with col3:
             st.metric("Average Degree", stats["Average Degree"])
             
-        # Add visualization link
+        # Generate visualization if there are nodes
         if stats["Nodes"] > 0:
             st.markdown("### Knowledge Graph Visualization")
-            html_path = os.path.join("./dickens", "knowledge_graph.html")
-            if os.path.exists(html_path):
-                st.markdown(f"""
-                View the interactive knowledge graph: 
-                [Open Knowledge Graph]({html_path}) (opens in new tab)
-                """)
-            else:
-                st.warning("Knowledge graph visualization not generated yet. Please run graph_visual_with_html.py first.")
+            
+            try:
+                from pyvis.network import Network
+                import random
+                
+                # Create a Pyvis network
+                net = Network(height="600px", width="100%", notebook=True)
+                
+                # Convert NetworkX graph to Pyvis network
+                net.from_nx(graph)
+                
+                # Add colors to nodes
+                for node in net.nodes:
+                    node["color"] = "#{:06x}".format(random.randint(0, 0xFFFFFF))
+                
+                net.show(graphml_path)
+                    
+            except ImportError:
+                st.warning("Please install pyvis to enable graph visualization: pip install pyvis")
+            except Exception as e:
+                st.error(f"Error generating visualization: {str(e)}")
             
     except Exception as e:
         logger.error(f"Error getting graph stats: {str(e)}")
         st.error(f"Error getting graph stats: {str(e)}")
+
+# Move this function before the dialog definitions
+def handle_chat_download():
+    """Download chat history as markdown."""
+    if not st.session_state.messages:
+        st.error("No messages to download yet! Start a conversation first.", icon="ℹ️")
+        return
+        
+    from time import strftime
+    
+    # Create markdown content
+    md_lines = [
+        "# LightRAG Chat Session\n",
+        f"*Exported on {strftime('%Y-%m-%d %H:%M:%S')}*\n",
+        "\n## Settings\n",
+        f"- Search Mode: {st.session_state.settings['search_mode']}",
+        f"- LLM Model: {st.session_state.settings['llm_model']}",
+        f"- Embedding Model: {st.session_state.settings['embedding_model']}",
+        f"- Temperature: {st.session_state.settings['temperature']}",
+        f"- System Message: {st.session_state.settings['system_message']}\n",
+        "\n## Conversation\n"
+    ]
+    
+    # Add messages
+    for msg in st.session_state.messages:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        md_lines.append(f"\n### {role} ({msg['metadata'].get('timestamp', 'N/A')})")
+        md_lines.append(f"\n{msg['content']}\n")
+        
+        if msg["role"] == "assistant" and "metadata" in msg:
+            metadata = msg["metadata"]
+            if "query_info" in metadata:
+                md_lines.append(f"\n> {metadata['query_info']}")
+            if "error" in metadata:
+                md_lines.append(f"\n> ⚠️ Error: {metadata['error']}")
+    
+    md_content = "\n".join(md_lines)
+    
+    st.download_button(
+        label="Download Chat",
+        data=md_content,
+        file_name=f"chat_session_{strftime('%Y%m%d_%H%M%S')}.md",
+        mime="text/markdown",
+        key="download_chat"
+    )
 
 @st.dialog("Download Options")
 def show_download_dialog():
@@ -447,7 +505,7 @@ with col3:
         show_kg_stats_dialog()
 
 with col4:
-    if st.button("", help="Download Options"):
+    if st.button("📥", help="Download Options"):
         show_download_dialog()
 
 # Create a container for chat history and AI output with border
@@ -498,83 +556,6 @@ with chat_container:
 def handle_settings_update():
     """Update settings and force RAG reinitialization."""
     st.session_state.initialized = False  # Force reinitialization
-
-def handle_chat_download():
-    """Download chat history as markdown."""
-    if not st.session_state.messages:
-        st.error("No messages to download yet! Start a conversation first.", icon="ℹ️")
-        return
-        
-    from time import strftime
-    
-    # Create markdown content
-    md_lines = [
-        "# LightRAG Chat Session\n",
-        f"*Exported on {strftime('%Y-%m-%d %H:%M:%S')}*\n",
-        "\n## Settings\n",
-        f"- Search Mode: {st.session_state.settings['search_mode']}",
-        f"- LLM Model: {st.session_state.settings['llm_model']}",
-        f"- Embedding Model: {st.session_state.settings['embedding_model']}",
-        f"- Temperature: {st.session_state.settings['temperature']}",
-        f"- System Message: {st.session_state.settings['system_message']}\n",
-        "\n## Conversation\n"
-    ]
-    
-    # Add messages
-    for msg in st.session_state.messages:
-        # Add role header
-        role = "User" if msg["role"] == "user" else "Assistant"
-        md_lines.append(f"\n### {role} ({msg['metadata'].get('timestamp', 'N/A')})")
-        
-        # Add message content
-        md_lines.append(f"\n{msg['content']}\n")
-        
-        # Add metadata if it exists and it's an assistant message
-        if msg["role"] == "assistant" and "metadata" in msg:
-            metadata = msg["metadata"]
-            if "query_info" in metadata:
-                md_lines.append(f"\n> {metadata['query_info']}")
-            if "error" in metadata:
-                md_lines.append(f"\n> ⚠️ Error: {metadata['error']}")
-    
-    # Convert to string
-    md_content = "\n".join(md_lines)
-    
-    # Create download link
-    st.download_button(
-        label="Download Chat",
-        data=md_content,
-        file_name=f"chat_session_{strftime('%Y%m%d_%H%M%S')}.md",
-        mime="text/markdown",
-        key="download_chat"  # Add unique key
-    )
-
-# Display chat history in the container
-with chat_container:
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            col1, col2 = st.columns([20, 1])
-            with col1:
-                st.write(message["content"])
-            with col2:
-                if "metadata" in message:
-                    metadata = message["metadata"]
-                    # Use time.strftime for timestamp if not provided
-                    timestamp = metadata.get('timestamp') or time.strftime('%H:%M:%S')
-                    info_text = f"""
-                    🕒 {timestamp}
-
-                    **Settings:**
-                    • Search: {metadata.get('search_mode', 'N/A')}
-                    • LLM: {metadata.get('llm_model', 'N/A')}
-                    • Embedder: {metadata.get('embedding_model', 'N/A')}
-                    • Temperature: {metadata.get('temperature', 'N/A')}
-                    """
-                    st.button("ℹ️", key=f"info_{message.get('timestamp', id(message))}", help=info_text)
-
-# Display the activity log in the sidebar
-st.sidebar.markdown("##### Activity Log")
-activity_container = st.sidebar.container()
 
 # Add a visual separator for action footer
 if prompt := st.chat_input("Ask a question about your records..."):
