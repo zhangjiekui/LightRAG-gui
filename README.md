@@ -56,8 +56,9 @@ poetry init
 
 poetry install
 
-# Run example
-poetry run streamlit run ui-examples/streamlit-import-query-lightrag.py
+# Run streamlit example
+poetry shell
+poetry run streamlit run notebooks/streamlit-app-lightrag.py
 ```
 
 ## Quick Start
