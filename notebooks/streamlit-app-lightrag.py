@@ -714,7 +714,11 @@ def rewrite_prompt(prompt: str) -> str:
     """Rewrite the user prompt into a templated format using OpenAI."""
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=st.session_state.settings["api_key"])
+        api_key = get_api_key()  # Get API key using our utility function
+        if not api_key:
+            raise ValueError("OpenAI API key not found")
+            
+        client = OpenAI(api_key=api_key)
         
         system_instruction = f"""
         You are a prompt engineering assistant. Your task is to rewrite user prompts into a templated format.
