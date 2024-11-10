@@ -930,27 +930,38 @@ if prompt := st.chat_input("Ask away. Expect 60+ seconds processing. Patience in
 # Modify handle_insert to use add_activity_log
 def handle_insert(content):
     """Handle document insertion."""
-    if st.session_state.rag is not None:
-        try:
-            # First verify API key is working
-            if not test_api_key():
-                return
+    # First check if RAG is initialized
+    if not hasattr(st.session_state, "rag") or st.session_state.rag is None:
+        # Try to initialize RAG
+        api_key = get_api_key()
+        if not api_key:
+            st.error("Please provide your OpenAI API key first.")
+            show_api_key_form()
+            return
+        if not test_api_key_secure(api_key):
+            return
+        init_rag_secure(api_key)
+    
+    try:
+        # Verify API key is still working
+        if not test_api_key():
+            return
+            
+        with st.spinner("Inserting content..."):
+            # Log the content size for debugging
+            add_activity_log(f"[*] Processing content ({len(content)} chars)...")
+            
+            with get_event_loop_context() as loop:
+                success = loop.run_until_complete(st.session_state.rag.ainsert(content))
                 
-            with st.spinner("Inserting content..."):
-                # Log the content size for debugging
-                add_activity_log(f"[*] Processing content ({len(content)} chars)...")
-                
-                with get_event_loop_context() as loop:
-                    success = loop.run_until_complete(st.session_state.rag.ainsert(content))
+                if success:
+                    st.success("Content inserted successfully!")
+                    add_activity_log(f"[+] Added content ({len(content)} chars)")
+                else:
+                    st.error("Failed to insert content - no relationships extracted")
+                    add_activity_log("[-] Failed to extract relationships from content")
                     
-                    if success:
-                        st.success("Content inserted successfully!")
-                        add_activity_log(f"[+] Added content ({len(content)} chars)")
-                    else:
-                        st.error("Failed to insert content - no relationships extracted")
-                        add_activity_log("[-] Failed to extract relationships from content")
-                        
-        except Exception as e:
-            logger.exception("An error occurred during insertion.")
-            st.error(f"An error occurred: {e}")
-            add_activity_log(f"[!] Insert error: {str(e)}")
+    except Exception as e:
+        logger.exception("An error occurred during insertion.")
+        st.error(f"An error occurred: {e}")
+        add_activity_log(f"[!] Insert error: {str(e)}")
