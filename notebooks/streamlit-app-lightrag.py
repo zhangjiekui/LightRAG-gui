@@ -363,6 +363,20 @@ def show_insert_dialog():
         with col2:
             if st.button("Insert LightRAG Paper"):
                 try:
+                    # First verify API key is available and valid
+                    api_key = get_api_key()
+                    if not api_key:
+                        st.error("Please provide your OpenAI API key first.")
+                        show_api_key_form()
+                        return
+                        
+                    if not test_api_key_secure(api_key):
+                        return
+                        
+                    # Initialize RAG if needed
+                    if not hasattr(st.session_state, "rag") or st.session_state.rag is None:
+                        init_rag_secure(api_key)
+                    
                     with open("dickens/inbox/2410.05779v2-LightRAG.pdf", "rb") as f:
                         pdf_reader = PyPDF2.PdfReader(f)
                         content = []
