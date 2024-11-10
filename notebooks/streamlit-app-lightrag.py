@@ -120,19 +120,31 @@ def get_api_key():
     """Securely retrieve OpenAI API key."""
     # Check environment variable first
     env_key = os.getenv("OPENAI_API_KEY")
-    if env_key:
+    if env_key and env_key.startswith("sk-"):
         return env_key
+    elif env_key:
+        st.error("❌ Invalid OpenAI API key format in environment variable. Key should start with 'sk-'")
+        return None
         
     # Then try secrets if environment variable not found
     try:
         secrets_exist = hasattr(st, "secrets") and isinstance(st.secrets, dict)
-        if secrets_exist and "OPENAI_API_KEY" in st.secrets:
-            os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-            return os.environ["OPENAI_API_KEY"]
-    except Exception:
-        pass
+        if secrets_exist:
+            if "OPENAI_API_KEY" in st.secrets:
+                secret_key = st.secrets["OPENAI_API_KEY"]
+                if secret_key.startswith("sk-"):
+                    os.environ["OPENAI_API_KEY"] = secret_key
+                    return secret_key
+                else:
+                    st.error("❌ Invalid OpenAI API key format in Streamlit secrets. Key should start with 'sk-'")
+            else:
+                st.error("❌ OPENAI_API_KEY not found in Streamlit secrets")
+        else:
+            st.error("❌ Streamlit secrets not configured")
+    except Exception as e:
+        st.error(f"❌ Error accessing Streamlit secrets: {str(e)}")
             
-    # If no key found, show input form
+    # If no valid key found
     return None
 
 def init_rag_secure(api_key: str):
