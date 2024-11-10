@@ -934,17 +934,17 @@ def handle_insert(content):
     if not hasattr(st.session_state, "rag") or st.session_state.rag is None:
         # Try to initialize RAG
         api_key = get_api_key()
-        if not api_key:
+        if api_key and test_api_key_secure(api_key):
+            init_rag_secure(api_key)
+        else:
             st.error("Please provide your OpenAI API key first.")
             show_api_key_form()
             return
-        if not test_api_key_secure(api_key):
-            return
-        init_rag_secure(api_key)
     
     try:
         # Verify API key is still working
         if not test_api_key():
+            show_api_key_form()
             return
             
         with st.spinner("Inserting content..."):
