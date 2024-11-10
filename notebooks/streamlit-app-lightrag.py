@@ -662,7 +662,7 @@ def handle_settings_update():
     st.session_state.initialized = False  # Force reinitialization
 
 # Add a visual separator for action footer
-if prompt := st.chat_input("Ask a question about your records..."):
+if prompt := st.chat_input("Ask away. Expect 60+ seconds processing. Patience in precision. "):
     # Input and controls in a row
     col1 = st.columns([1])[0]  # Simplified to just show the prompt
     with col1:
