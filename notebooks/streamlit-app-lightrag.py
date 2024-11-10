@@ -223,6 +223,20 @@ st.sidebar.markdown("##### Activity Log")
 # Create a sidebar container for activity logs
 activity_container = st.sidebar.container()
 
+# Add background image
+st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background-image: url("https://i-blog.csdnimg.cn/direct/567139f1a36e4564abc63ce5c12b6271.jpeg");
+            background-size: cover;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+
 # Define all dialog functions first
 @st.dialog("Insert Records")
 def show_insert_dialog():
@@ -490,7 +504,7 @@ def handle_chat_download():
         if msg["role"] == "assistant" and "metadata" in msg:
             metadata = msg["metadata"]
             if "query_info" in metadata:
-                md_lines.append(f"\n> {metadata['query_info']}")
+                md_lines.append(f"\n`> [!query] {metadata['query_info']}`")
             if "error" in metadata:
                 md_lines.append(f"\n> ⚠️ Error: {metadata['error']}")
     
@@ -632,6 +646,76 @@ def add_activity_log(message: str):
     with activity_container:
         st.markdown(f"```\n{message}\n```")
 
+# Move this function before any chat handling code, right after the add_activity_log function
+
+def format_chat_message(content, metadata=None):
+    """Format chat message with markdown and metadata."""
+    formatted = []
+    
+    # Add main content with markdown formatting
+    formatted.append(f"```\n"+content+"\n```")
+    
+    # Add metadata footer if present
+    if metadata:
+        if "query_info" in metadata:
+            formatted.append(f"`> [!query] {metadata['query_info']}`")
+        if "error" in metadata:
+            formatted.append(f"> ⚠️ **Error:** {metadata['error']}")
+            
+    return "\n".join(formatted)
+
+# Move this function before the chat handling code, right after format_chat_message
+
+def rewrite_prompt(prompt: str) -> str:
+    """Rewrite the user prompt into a templated format using OpenAI."""
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=st.session_state.settings["api_key"])
+        
+        system_instruction = f"""
+        You are a prompt engineering assistant. Your task is to rewrite user prompts into a templated format.
+        The template should follow this structure:
+
+        <START_OF_SYSTEM_PROMPT>
+        {st.session_state.settings["system_prompt"]}
+        {{# Optional few shot demos if provided #}}
+        {{% if few_shot_demos is not none %}}
+        Here are some examples:
+        {{few_shot_demos}}
+        {{% endif %}}
+        <END_OF_SYSTEM_PROMPT>
+        <START_OF_USER>
+        {{input_str}}
+        <END_OF_USER>
+
+        Keep the original intent but make it more specific and detailed.
+        You will answer a reasoning question. Think step by step. The last two lines of your response should be of the following format: 
+        - '> Answer: $VALUE' where VALUE is concise and to the point.
+        - '> Sources: $SOURCE1, $SOURCE2, ...' where SOURCE1, SOURCE2, etc. are the sources you used to justify your answer.
+        """
+
+        response = client.chat.completions.create(
+            model="gpt-4",  # Using GPT-4 for better prompt engineering
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": f"Rewrite this prompt: {prompt}"}
+            ],
+            temperature=0.7
+        )
+        
+        rewritten = response.choices[0].message.content
+        
+        # Log the rewrite
+        add_activity_log(f"[*] Prompt rewritten ({len(prompt)} → {len(rewritten)} chars)")
+        
+        return rewritten
+        
+    except Exception as e:
+        logger.error(f"Error rewriting prompt: {str(e)}")
+        add_activity_log(f"[!] Prompt rewrite error: {str(e)}")
+        # Return original prompt if rewrite fails
+        return prompt
+
 # Initialize session state with API key
 if "initialized" not in st.session_state:
     st.session_state.initialized = False
@@ -639,7 +723,16 @@ if "initialized" not in st.session_state:
         "search_mode": "hybrid",
         "llm_model": DEFAULT_LLM_MODEL,
         "embedding_model": DEFAULT_EMBEDDER_MODEL,
-        "system_prompt": "You are a helpful AI assistant that answers questions based on the provided records in Obsidian markdown format with use of #wikitags and [[wikilinks]].",
+        "system_prompt": """You are a helpful AI assistant that answers questions based on the provided records.
+        
+        Guidelines:
+        1. Use Obsidian markdown format with ## headers, #tags, [[wikilinks]], and whitespace
+        2. Cite relevant sources when possible
+        3. Be concise but thorough
+        4. If uncertain, acknowledge limitations
+        5. Format code blocks with appropriate language tags
+        
+        Remember to maintain a helpful and professional tone while providing accurate information based on the context.""",
         "temperature": 0.7,
         "api_key": os.getenv("OPENAI_API_KEY", "")
     }
@@ -663,15 +756,20 @@ def handle_settings_update():
 
 # Add a visual separator for action footer
 if prompt := st.chat_input("Ask away. Expect 60+ seconds processing. Patience in precision. "):
-    # Input and controls in a row
-    col1 = st.columns([1])[0]  # Simplified to just show the prompt
-    with col1:
-        st.write(prompt)
+    add_activity_log(f"> Q: {prompt[:50]}..." if len(prompt) > 50 else f"> Q: {prompt}")
 
-# Handle chat input
-if prompt:
-    add_activity_log(f"[?] Q: {prompt[:50]}..." if len(prompt) > 50 else f"[?] Q: {prompt}")
+    prompt_rewritten = rewrite_prompt(prompt)
+    # Create query info string
+    prompt_hash = xxhash.xxh64(prompt.encode()).hexdigest()[:12]
+    current_date = time.strftime('%Y-%m-%d %H:%M:%S')
+    query_info = f"[{current_date}] {st.session_state.settings['search_mode']}@{st.session_state.settings['llm_model']} #{prompt_hash}"
     
+    # Add user message with markdown
+    with st.chat_message("user"):
+        with st.expander(f"> Prompt: {prompt[:50]}..."):
+            st.markdown(f"```\n{prompt_rewritten}\n```")                # Add date and prompt hash
+            st.markdown(f"`> [!query] {query_info}`")
+
     # Generate response
     with st.chat_message("assistant"):
         status_placeholder = st.empty()
@@ -679,63 +777,61 @@ if prompt:
         with status_placeholder.status("Searching and generating response..."):
             query_param = QueryParam(mode=st.session_state.settings["search_mode"])
             try:
+                start_time = time.time()  # Start timing
                 with get_event_loop_context() as loop:
-                    response = loop.run_until_complete(st.session_state.rag.aquery(prompt, param=query_param))
+                    response = loop.run_until_complete(st.session_state.rag.aquery(prompt_rewritten, param=query_param))                
+                query_runtime = round(time.time() - start_time, 2)  # Calculate runtime
+                add_activity_log(f"Query #{prompt_hash} runtime: {query_runtime}s")
+
+                # Create metadata
+                metadata = {
+                    "timestamp": time.strftime('%H:%M:%S'),
+                    "search_mode": st.session_state.settings["search_mode"],
+                    "llm_model": st.session_state.settings["llm_model"],
+                    "embedding_model": st.session_state.settings["embedding_model"],
+                    "temperature": st.session_state.settings["temperature"],
+                    "prompt_hash": prompt_hash,
+                    "query_info": query_info,
+                    "runtime": f"{query_runtime}s"  # Add runtime to metadata
+                }
                 
-                # Create query info string
-                prompt_hash = xxhash.xxh64(prompt.encode()).hexdigest()[:8]
-                query_info = f"{st.session_state.settings['search_mode']}@{st.session_state.settings['llm_model']} #{prompt_hash}"
+                # Format and display response with markdown
+                formatted_response = format_chat_message(response, metadata)
+                st.markdown(formatted_response)
                 
-                # Replace status with expander
-                with status_placeholder.expander(query_info, expanded=False):
-                    st.write("**Query Details:**")
-                    st.write(f"- Search Mode: {st.session_state.settings['search_mode']}")
-                    st.write(f"- LLM Model: {st.session_state.settings['llm_model']}")
-                    st.write(f"- Embedding Model: {st.session_state.settings['embedding_model']}")
-                    st.write(f"- Temperature: {st.session_state.settings['temperature']}")
-                    st.write(f"- Prompt Hash: {prompt_hash}")
-                
-                # Add response with metadata
+                # Add to message history
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": response,
-                    "metadata": {
-                        "timestamp": time.strftime('%H:%M:%S'),  # Use time.strftime instead of datetime
-                        "search_mode": st.session_state.settings["search_mode"],
-                        "llm_model": st.session_state.settings["llm_model"],
-                        "embedding_model": st.session_state.settings["embedding_model"],
-                        "temperature": st.session_state.settings["temperature"],
-                        "prompt_hash": prompt_hash,
-                        "query_info": query_info
-                    }
+                    "metadata": metadata
                 })
                 
-                st.write(response)
-                
-                # Log the response in activity log (moved inside try block)
-                add_activity_log(f"[@] A: {response[:50]}..." if len(response) > 50 else f"[@] A: {response}")
+                # Log the response
+                add_activity_log(f"> A: {response[:50]}..." if len(response) > 50 else f"[@] A: {response}")
                 
             except Exception as e:
                 error_msg = f"Error generating response: {str(e)}"
                 logger.error(error_msg)
                 add_activity_log(f"[!] {error_msg}")
-                fallback_response = "I apologize, but I encountered an error while processing your request."
                 
-                # Add error response to messages
+                fallback_response = "I apologize, but I encountered an error while processing your request."
+                error_metadata = {
+                    "timestamp": time.strftime('%H:%M:%S'),
+                    "error": str(e)
+                }
+                
+                # Format and display error response with markdown
+                formatted_error = format_chat_message(fallback_response, error_metadata)
+                st.markdown(formatted_error)
+                
+                # Add to message history
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": fallback_response,
-                    "metadata": {
-                        "search_mode": st.session_state.settings["search_mode"],
-                        "llm_model": st.session_state.settings["llm_model"],
-                        "embedding_model": st.session_state.settings["embedding_model"],
-                        "error": str(e)
-                    }
+                    "metadata": error_metadata
                 })
                 
-                st.write(fallback_response)
-                
-                # Log the error in activity log
+                # Log the error
                 add_activity_log(f"[!] {error_msg}")
 
 # Modify handle_insert to use add_activity_log

@@ -9,11 +9,18 @@
     - @Streamlit Chat element - use this chat element to make @streamlit-import-query-lightrag.py into a detailed chat interface
 - [!] Fix streamlit ui glitchiness
 - [x] Add timestamps to chat ui
-- [ ] add graph visualization
-- [ ] blog https://blog.streamlit.io/how-to-build-a-llama-2-chatbot/
+- [x] add graph visualization
+- [!] blog about it https://blog.streamlit.io/how-to-build-a-llama-2-chatbot/
+
+## 2024-11-08
+- [x] markdown messages in chat ui
 
 - [?] apply the tagrag-interface-spec.md design spec
 
 
-## 2024-11-08
+## 2024-11-10
+- [ ] Make a trilingual chatbot that accepts structured outputs
+- [ ] Implement GROQ-LLAMA3-8B-8192 as default AI model
+
+## 2024-12-??
 - [ ] make a better version of @streamlit-import-query-lightrag.py using taipy rather than streamlit as @taipy-import-query-lightrag.py
