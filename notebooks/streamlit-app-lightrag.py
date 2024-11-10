@@ -102,19 +102,72 @@ def get_embedding_config(model_name):
         raise ValueError(f"Unsupported embedding model: {model_name}")
         
     config = embedding_configs[model_name]
+    api_key = get_api_key()  # Get API key securely
+    if not api_key:
+        raise ValueError("OpenAI API key not found")
+        
     return EmbeddingFunc(
         embedding_dim=config["dim"],
         max_token_size=config["max_tokens"],
         func=lambda texts: openai_embedding(
             texts,
             model=model_name,
-            api_key=st.session_state.settings["api_key"]
+            api_key=api_key
         )
     )
 
+def get_api_key():
+    """Securely retrieve OpenAI API key."""
+    # Check environment variable first
+    env_key = os.getenv("OPENAI_API_KEY")
+    if env_key:
+        return env_key
+        
+    # Then try secrets if environment variable not found
+    try:
+        secrets_exist = hasattr(st, "secrets") and isinstance(st.secrets, dict)
+        if secrets_exist and "OPENAI_API_KEY" in st.secrets:
+            os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+            return os.environ["OPENAI_API_KEY"]
+    except Exception:
+        pass
+            
+    # If no key found, show input form
+    return None
+
+def init_rag_secure(api_key: str):
+    """Initialize RAG with API key without storing it."""
+    working_dir = "./dickens"
+    
+    if not os.path.exists(working_dir):
+        os.makedirs(working_dir)
+    
+    # Initialize RAG with current settings
+    llm_func, llm_name = get_llm_config(st.session_state.settings["llm_model"])
+    embedding_config = get_embedding_config(st.session_state.settings["embedding_model"])
+        
+    # Use API key directly without storing in session state
+    llm_kwargs = {
+        "temperature": st.session_state.settings["temperature"],
+        "system_prompt": st.session_state.settings["system_prompt"],
+        "api_key": api_key  # Use key directly
+    }
+    
+    st.session_state.rag = LightRAG(
+        working_dir=working_dir,
+        llm_model_func=llm_func,
+        llm_model_name=llm_name,
+        llm_model_max_async=4,
+        llm_model_max_token_size=32768,
+        llm_model_kwargs=llm_kwargs,
+        embedding_func=embedding_config
+    )
+    st.session_state.initialized = True
+
 def test_api_key():
     """Test if OpenAI API key is valid and prompt for input if invalid."""
-    if not st.session_state.settings["api_key"]:
+    api_key = get_api_key()
+    if not api_key:
         st.error("""
         ⚠️ OpenAI API key is required.
         Please enter your API key in the form below.
@@ -124,7 +177,7 @@ def test_api_key():
         
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=st.session_state.settings["api_key"])
+        client = OpenAI(api_key=api_key)
         
         # Try a simple embedding request
         response = client.embeddings.create(
@@ -168,13 +221,15 @@ def show_api_key_form():
         submitted = st.form_submit_button("Save API Key")
         
         if submitted and new_api_key:
-            st.session_state.settings["api_key"] = new_api_key
+            os.environ["OPENAI_API_KEY"] = new_api_key
             st.session_state.initialized = False
             st.rerun()
 
 def init_rag():
     """Initialize/reinitialize RAG."""
-    if not test_api_key():  # Test API key before initializing
+    api_key = get_api_key()
+    if not api_key or not test_api_key_secure(api_key):
+        show_api_key_form()
         return False
         
     working_dir = "./dickens"
@@ -190,7 +245,7 @@ def init_rag():
     llm_kwargs = {
         "temperature": st.session_state.settings["temperature"],
         "system_prompt": st.session_state.settings["system_prompt"],
-        "api_key": st.session_state.settings["api_key"]
+        "api_key": api_key  # Use API key directly
     }
     
     st.session_state.rag = LightRAG(
@@ -329,17 +384,6 @@ def show_insert_dialog():
 @st.dialog("Settings")
 def show_settings_dialog():
     """Dialog for configuring LightRAG settings."""
-    # Add API key input at the top
-    api_key = st.text_input(
-        "OpenAI API Key:",
-        value=st.session_state.settings["api_key"],
-        type="password",
-        help="Enter your OpenAI API key"
-    )
-    if api_key != st.session_state.settings["api_key"]:
-        st.session_state.settings["api_key"] = api_key
-        st.session_state.initialized = False
-    
     # Update model selection dropdowns with separate options
     st.session_state.settings["llm_model"] = st.selectbox(
         "LLM Model:",
@@ -716,6 +760,38 @@ def rewrite_prompt(prompt: str) -> str:
         # Return original prompt if rewrite fails
         return prompt
 
+def test_api_key_secure(api_key: str) -> bool:
+    """Test if OpenAI API key is valid without storing it."""
+    if not api_key:
+        return False
+        
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        
+        # Try a simple embedding request
+        response = client.embeddings.create(
+            input="test",
+            model="text-embedding-ada-002"
+        )
+
+        # Send test prompt
+        chat_response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "What is LightRAG?"}]
+        )
+        test_response = chat_response.choices[0].message.content
+
+        # Log the test response
+        add_activity_log(f"[T] Test prompt: What is LightRAG?\n[@] {test_response[:100]}...")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"API key test failed: {str(e)}")
+        add_activity_log(f"[!] API key test failed: {str(e)}")
+        return False
+
 # Initialize session state with API key
 if "initialized" not in st.session_state:
     st.session_state.initialized = False
@@ -733,21 +809,31 @@ if "initialized" not in st.session_state:
         5. Format code blocks with appropriate language tags
         
         Remember to maintain a helpful and professional tone while providing accurate information based on the context.""",
-        "temperature": 0.7,
-        "api_key": os.getenv("OPENAI_API_KEY", "")
+        "temperature": 0.7
     }
-    st.session_state.rag = None
-    st.session_state.messages = []
-    st.session_state.activity_log = []
     
-    # Add notice about API key source
-    if st.session_state.settings["api_key"]:
-        add_activity_log("ℹ️ Using OpenAI API key from environment")
+    # Initialize messages list if not exists
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    
+    # Check for API key in different locations
+    api_key = get_api_key()
+    if api_key:
+        if test_api_key_secure(api_key):
+            st.session_state.temp_api_key = api_key
+            init_rag_secure(api_key)
+        else:
+            st.error("Invalid API key found in environment/secrets.")
+            show_api_key_form()
+    else:
+        show_api_key_form()
 
 # After initializing RAG, display initial stats
 with chat_container: 
-    if not st.session_state.initialized:
-        init_rag()
+    if not st.session_state.initialized and hasattr(st.session_state, 'temp_api_key'):
+        init_rag_secure(st.session_state.temp_api_key)
+        # Clear temporary key after initialization
+        delattr(st.session_state, 'temp_api_key')
 
 # Define helper functions first
 def handle_settings_update():
