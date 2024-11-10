@@ -13,13 +13,16 @@
 - [!] blog about it https://blog.streamlit.io/how-to-build-a-llama-2-chatbot/
 
 ## 2024-11-08
-- [x] markdown messages in chat ui
-
+- [?] secure api key handling
+- [ ] markdown messages in chat ui
+- [ ] trilingual PR release
+- [ ] hat feature, advanced settings
 - [?] apply the tagrag-interface-spec.md design spec
 
 
 ## 2024-11-10
 - [ ] Make a trilingual chatbot that accepts structured outputs
+
 - [ ] Implement GROQ-LLAMA3-8B-8192 as default AI model
 
 ## 2024-12-??

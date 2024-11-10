@@ -10,6 +10,46 @@ import networkx as nx
 import time
 import streamlit as st
 
+# Define constants first
+DEFAULT_LLM_MODEL = "gpt-4o-mini-2024-07-18"
+DEFAULT_EMBEDDER_MODEL = "text-embedding-ada-002"
+
+# Add model options constants
+AVAILABLE_LLM_MODELS = [
+    DEFAULT_LLM_MODEL,
+    "gpt-4o-mini"  # Legacy model option
+]
+
+AVAILABLE_EMBEDDER_MODELS = [
+    DEFAULT_EMBEDDER_MODEL,
+    "text-embedding-3-small"  # New smaller model option
+]
+
+# Initialize session state first, before anything else
+if "initialized" not in st.session_state:
+    st.session_state.initialized = False
+    st.session_state.messages = []  # Initialize messages list
+    st.session_state.settings = {
+        "search_mode": "hybrid",
+        "llm_model": DEFAULT_LLM_MODEL,
+        "embedding_model": DEFAULT_EMBEDDER_MODEL,
+        "system_prompt": """You are a helpful AI assistant that answers questions based on the provided records.
+
+        Guidelines:
+        1. Use Obsidian markdown format with ## headers, #tags, [[wikilinks]], and whitespace
+        2. Cite relevant sources when possible
+        3. Be concise but thorough
+        4. If uncertain, acknowledge limitations
+        5. Format code blocks with appropriate language tags
+
+        Remember to maintain a helpful and professional tone while providing accurate information based on the context.""",
+        "temperature": 0.7
+    }
+
+# Ensure messages list exists (redundant but safe)
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
 # Set page config before any other Streamlit commands
 st.set_page_config(
     page_title="LightRAG Demo on Streamlit",
@@ -62,22 +102,58 @@ logger.setLevel(logging.DEBUG)
 # Rest of the imports
 import streamlit as st
 
-# Add constants after DEFAULT_LLM_MODEL
-DEFAULT_LLM_MODEL = "gpt-4o-mini-2024-07-18"
-DEFAULT_EMBEDDER_MODEL = "text-embedding-ada-002"
+# Move show_api_key_form before other functions that use it
+@st.dialog("OpenAI API Key")
+def show_api_key_form(key_suffix=""):
+    """Display the API key input dialog."""
+    # Only show dialog if not initialized and no valid key exists
+    if st.session_state.initialized or get_api_key():
+        return
+        
+    st.markdown("### Enter OpenAI API Key")
+    st.markdown("Get your API key from [OpenAI Platform](https://platform.openai.com/account/api-keys)")
+    
+    new_api_key = st.text_input(
+        "API Key:",
+        type="password",
+        help="Enter your OpenAI API key starting with 'sk-'"
+    )
+    
+    if st.button("Save API Key"):
+        if new_api_key and new_api_key.startswith("sk-"):
+            try:
+                # Store key and initialize
+                st.session_state.openai_api_key = new_api_key
+                add_activity_log("[+] API key saved")
+                init_rag()
+                st.success("API key saved successfully!")
+                st.rerun()
+            except Exception as e:
+                logger.error(f"Error saving API key: {str(e)}")
+                add_activity_log(f"[!] API key error: {str(e)}")
+                st.error(f"Error saving API key: {str(e)}")
+        else:
+            st.error("Invalid API key format. Key should start with 'sk-'")
 
-# Add model options constants
-AVAILABLE_LLM_MODELS = [
-    DEFAULT_LLM_MODEL,
-    "gpt-4o-mini"  # Legacy model option
-]
+def get_api_key():
+    """Securely retrieve OpenAI API key."""
+    # First check environment variable
+    env_key = os.getenv("OPENAI_API_KEY")
+    if env_key and env_key.startswith("sk-"):
+        # Store environment key in session state if not already there
+        if "openai_api_key" not in st.session_state or st.session_state.openai_api_key != env_key:
+            st.session_state.openai_api_key = env_key
+        return env_key
+        
+    # Then check session state
+    if "openai_api_key" in st.session_state and st.session_state.openai_api_key.startswith("sk-"):
+        return st.session_state.openai_api_key
+    
+    # No valid key found
+    add_activity_log("[-] No valid API key found")
+    logger.warning("No valid API key found")
+    return None
 
-AVAILABLE_EMBEDDER_MODELS = [
-    DEFAULT_EMBEDDER_MODEL,
-    "text-embedding-3-small"  # New smaller model option
-]
-
-# Move helper functions and init_rag before the UI section
 def get_llm_config(model_name):
     """Get the LLM configuration based on model name."""
     if model_name in [DEFAULT_LLM_MODEL, "gpt-4o-mini"]:
@@ -116,148 +192,28 @@ def get_embedding_config(model_name):
         )
     )
 
-def get_api_key():
-    """Securely retrieve OpenAI API key."""
-    # Check environment variable first
-    env_key = os.getenv("OPENAI_API_KEY")
-    if env_key and env_key.startswith("sk-"):
-        return env_key
-    elif env_key:
-        st.error("❌ Invalid OpenAI API key format in environment variable. Key should start with 'sk-'")
-        return None
-        
-    # Then try secrets if environment variable not found
-    try:
-        secrets_exist = hasattr(st, "secrets") and isinstance(st.secrets, dict)
-        if secrets_exist:
-            if "OPENAI_API_KEY" in st.secrets:
-                secret_key = st.secrets["OPENAI_API_KEY"]
-                if secret_key.startswith("sk-"):
-                    os.environ["OPENAI_API_KEY"] = secret_key
-                    return secret_key
-                else:
-                    st.error("❌ Invalid OpenAI API key format in Streamlit secrets. Key should start with 'sk-'")
-            else:
-                st.error("❌ OPENAI_API_KEY not found in Streamlit secrets")
-        else:
-            st.error("❌ Streamlit secrets not configured")
-    except Exception as e:
-        st.error(f"❌ Error accessing Streamlit secrets: {str(e)}")
-            
-    # If no valid key found
-    return None
-
-def init_rag_secure(api_key: str):
-    """Initialize RAG with API key without storing it."""
+def init_rag():
+    """Initialize/reinitialize RAG with secure API key handling."""
     working_dir = "./dickens"
     
     if not os.path.exists(working_dir):
         os.makedirs(working_dir)
     
+    # Get and validate API key
+    api_key = get_api_key()
+    if not api_key:  # Simplified check
+        show_api_key_form("init")
+        return False
+    
     # Initialize RAG with current settings
     llm_func, llm_name = get_llm_config(st.session_state.settings["llm_model"])
     embedding_config = get_embedding_config(st.session_state.settings["embedding_model"])
-        
+    
     # Use API key directly without storing in session state
     llm_kwargs = {
         "temperature": st.session_state.settings["temperature"],
         "system_prompt": st.session_state.settings["system_prompt"],
         "api_key": api_key  # Use key directly
-    }
-    
-    st.session_state.rag = LightRAG(
-        working_dir=working_dir,
-        llm_model_func=llm_func,
-        llm_model_name=llm_name,
-        llm_model_max_async=4,
-        llm_model_max_token_size=32768,
-        llm_model_kwargs=llm_kwargs,
-        embedding_func=embedding_config
-    )
-    st.session_state.initialized = True
-
-def test_api_key():
-    """Test if OpenAI API key is valid and prompt for input if invalid."""
-    api_key = get_api_key()
-    if not api_key:
-        st.error("""
-        ⚠️ OpenAI API key is required.
-        Please enter your API key in the form below.
-        """)
-        show_api_key_form()
-        return False
-        
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-        
-        # Try a simple embedding request
-        response = client.embeddings.create(
-            input="test",
-            model="text-embedding-ada-002"
-        )
-
-        # Send test prompt
-        chat_response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": "What is LightRAG?"}]
-        )
-        test_response = chat_response.choices[0].message.content
-
-        # Log the test response
-        add_activity_log(f"[T] Test prompt: What is LightRAG?\n[@] {test_response[:100]}...")
-        
-        return True
-        
-    except Exception as e:
-        st.error(f"""
-        ⚠️ API Error. Please ensure:
-        1. You have entered a valid OpenAI API key
-        2. Your API key has access to the text-embedding-ada-002 model
-        
-        Error details: {str(e)}
-        """)
-        
-        show_api_key_form()
-        return False
-
-def show_api_key_form():
-    """Display the API key input form."""
-    with st.form("api_key_form"):
-        new_api_key = st.text_input(
-            "Enter your OpenAI API key:",
-            type="password",
-            help="Get your API key from https://platform.openai.com/account/api-keys"
-        )
-        
-        submitted = st.form_submit_button("Save API Key")
-        
-        if submitted and new_api_key:
-            os.environ["OPENAI_API_KEY"] = new_api_key
-            st.session_state.initialized = False
-            st.rerun()
-
-def init_rag():
-    """Initialize/reinitialize RAG."""
-    api_key = get_api_key()
-    if not api_key or not test_api_key_secure(api_key):
-        show_api_key_form()
-        return False
-        
-    working_dir = "./dickens"
-    
-    if not os.path.exists(working_dir):
-        os.makedirs(working_dir)
-    
-    # Initialize RAG with current settings
-    llm_func, llm_name = get_llm_config(st.session_state.settings["llm_model"])
-    embedding_config = get_embedding_config(st.session_state.settings["embedding_model"])
-        
-    # Separate LLM kwargs from query settings
-    llm_kwargs = {
-        "temperature": st.session_state.settings["temperature"],
-        "system_prompt": st.session_state.settings["system_prompt"],
-        "api_key": api_key  # Use API key directly
     }
     
     st.session_state.rag = LightRAG(
@@ -284,10 +240,8 @@ def init_rag():
 st.sidebar.markdown("### [😎 LightRAG](https://github.com/HKUDS/LightRAG) [Kwaai](https://www.kwaai.ai/) Day [🔗](https://lightrag-gui.streamlit.app)\n#beta 2024-11-09")
 st.sidebar.markdown("[![QRC|64](https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=https://cal.com/aiproductguy/lightrag-demo)](https://cal.com/aiproductguy/lightrag-demo)")
 
-# Add activity log section in sidebar
+# Add activity log container in sidebar
 st.sidebar.markdown("##### Activity Log")
-
-# Create a sidebar container for activity logs
 activity_container = st.sidebar.container()
 
 # Add background image
@@ -303,11 +257,37 @@ st.markdown(
         unsafe_allow_html=True
     )
 
+# Add after the constants but before get_embedding_config
+def add_activity_log(message: str):
+    """Add an entry to the activity log and display in sidebar."""
+    # Initialize activity log if not exists
+    if "activity_log" not in st.session_state:
+        st.session_state.activity_log = []
+        
+    # Add new message
+    st.session_state.activity_log.append(message)
+    
+    # Keep only last 50 entries to prevent too much history
+    st.session_state.activity_log = st.session_state.activity_log[-50:]
+    
+    # Update sidebar display
+    if "activity_container" in globals():
+        with activity_container:
+            st.markdown(f"```\n{message}\n```")
+    else:
+        # Fallback if container not available
+        st.sidebar.markdown(f"```\n{message}\n```")
 
 # Define all dialog functions first
 @st.dialog("Insert Records")
 def show_insert_dialog():
     """Dialog for inserting records from various sources."""
+    # First check if we have a valid API key
+    api_key = get_api_key()
+    if not api_key:
+        st.error("Please provide your OpenAI API key in Settings first.")
+        return
+        
     tags = st.text_input(
         "Tags (optional):",
         help="Add comma-separated tags to help organize your documents"
@@ -375,19 +355,11 @@ def show_insert_dialog():
         with col2:
             if st.button("Insert LightRAG Paper"):
                 try:
-                    # First verify API key is available and valid
-                    api_key = get_api_key()
-                    if not api_key:
-                        st.error("Please provide your OpenAI API key first.")
-                        show_api_key_form()
-                        return
-                        
-                    if not test_api_key_secure(api_key):
-                        return
-                        
                     # Initialize RAG if needed
                     if not hasattr(st.session_state, "rag") or st.session_state.rag is None:
-                        init_rag_secure(api_key)
+                        if not init_rag():
+                            st.error("Failed to initialize RAG. Please check your settings.")
+                            return
                     
                     with open("dickens/inbox/2410.05779v2-LightRAG.pdf", "rb") as f:
                         pdf_reader = PyPDF2.PdfReader(f)
@@ -454,7 +426,7 @@ def show_kg_stats_dialog():
         graph_path = "./dickens/graph_chunk_entity_relation.graphml"
         
         if not os.path.exists(graph_path):
-            st.markdown("> [!graph] ⚠️ **Knowledge Graph file not found.** Please insert some documents first.")
+            st.markdown("> [!graph] ⚠ **Knowledge Graph file not found.** Please insert some documents first.")
             return
             
         graph = nx.read_graphml(graph_path)
@@ -699,46 +671,38 @@ with col4:
     if st.button("⬇", help="Download Options"):
         show_download_dialog()
 
-# Create a container for chat history and AI output with border
-chat_container = st.container(border=True)
-
-# Add after the model constants but before session state initialization
-def add_activity_log(message: str):
-    """Add an entry to the activity log and display in sidebar."""
-    # Initialize activity log if not exists
-    if "activity_log" not in st.session_state:
-        st.session_state.activity_log = []
-        
-    # Add new message
-    st.session_state.activity_log.append(message)
-    
-    # Keep only last 50 entries to prevent too much history
-    st.session_state.activity_log = st.session_state.activity_log[-50:]
-    
-    # Update sidebar display
-    with activity_container:
-        st.markdown(f"```\n{message}\n```")
-
-# Move this function before any chat handling code, right after the add_activity_log function
-
+# Add this before the chat history display section
 def format_chat_message(content, metadata=None):
     """Format chat message with markdown and metadata."""
     formatted = []
     
-    # Add main content with markdown formatting
-    formatted.append(f"```\n"+content+"\n```")
+    # Add main content without code block formatting
+    formatted.append(content)
     
     # Add metadata footer if present
     if metadata:
         if "query_info" in metadata:
-            formatted.append(f"`> [!query] {metadata['query_info']}`")
+            formatted.append(f"\n`> [!query] {metadata['query_info']}`")
         if "error" in metadata:
-            formatted.append(f"> ⚠️ **Error:** {metadata['error']}")
+            formatted.append(f"\n> ⚠️ **Error:** {metadata['error']}")
             
     return "\n".join(formatted)
 
-# Move this function before the chat handling code, right after format_chat_message
+# Create a container for chat history and AI output with border
+chat_container = st.container(border=True)
 
+# Display chat history
+with chat_container:
+    for message in st.session_state.messages:
+        # Ensure role is either "user" or "assistant"
+        role = "user" if message["role"] == "user" else "assistant"
+        with st.chat_message(role):
+            st.markdown(format_chat_message(
+                message["content"],
+                message.get("metadata", {})
+            ))
+
+# Move rewrite_prompt before handle_chat_input
 def rewrite_prompt(prompt: str) -> str:
     """Rewrite the user prompt into a templated format using OpenAI."""
     try:
@@ -793,201 +757,124 @@ def rewrite_prompt(prompt: str) -> str:
         # Return original prompt if rewrite fails
         return prompt
 
-def test_api_key_secure(api_key: str) -> bool:
-    """Test if OpenAI API key is valid without storing it."""
-    if not api_key:
-        return False
-        
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-        
-        # Try a simple embedding request
-        response = client.embeddings.create(
-            input="test",
-            model="text-embedding-ada-002"
-        )
-
-        # Send test prompt
-        chat_response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": "What is LightRAG?"}]
-        )
-        test_response = chat_response.choices[0].message.content
-
-        # Log the test response
-        add_activity_log(f"[T] Test prompt: What is LightRAG?\n[@] {test_response[:100]}...")
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"API key test failed: {str(e)}")
-        add_activity_log(f"[!] API key test failed: {str(e)}")
-        return False
-
-# Initialize session state with API key
-if "initialized" not in st.session_state:
-    st.session_state.initialized = False
-    st.session_state.settings = {
-        "search_mode": "hybrid",
-        "llm_model": DEFAULT_LLM_MODEL,
-        "embedding_model": DEFAULT_EMBEDDER_MODEL,
-        "system_prompt": """You are a helpful AI assistant that answers questions based on the provided records.
-        
-        Guidelines:
-        1. Use Obsidian markdown format with ## headers, #tags, [[wikilinks]], and whitespace
-        2. Cite relevant sources when possible
-        3. Be concise but thorough
-        4. If uncertain, acknowledge limitations
-        5. Format code blocks with appropriate language tags
-        
-        Remember to maintain a helpful and professional tone while providing accurate information based on the context.""",
-        "temperature": 0.7
-    }
-    
-    # Initialize messages list if not exists
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    
-    # Check for API key in different locations
+def handle_chat_input():
+    """Handle chat input and generate AI responses."""
+    # Check for API key first
     api_key = get_api_key()
-    if api_key:
-        if test_api_key_secure(api_key):
-            st.session_state.temp_api_key = api_key
-            init_rag_secure(api_key)
-        else:
-            st.error("Invalid API key found in environment/secrets.")
-            show_api_key_form()
-    else:
+    if not api_key:
         show_api_key_form()
+        return
 
-# After initializing RAG, display initial stats
-with chat_container: 
-    if not st.session_state.initialized and hasattr(st.session_state, 'temp_api_key'):
-        init_rag_secure(st.session_state.temp_api_key)
-        # Clear temporary key after initialization
-        delattr(st.session_state, 'temp_api_key')
+    if prompt := st.chat_input("Ask away. Expect 5-50 seconds of processing. Patience in precision.", key="chat_input"):
+        # Create query info string
+        prompt_hash = xxhash.xxh64(prompt.encode()).hexdigest()[:12]
+        current_date = time.strftime('%Y-%m-%d %H:%M:%S')
+        query_info = f"[{current_date}] {st.session_state.settings['search_mode']}@{st.session_state.settings['llm_model']} #{prompt_hash}"
+
+        # Add user message to chat
+        st.session_state.messages.append({
+            "role": "user",
+            "content": prompt,
+            "metadata": {
+                "timestamp": current_date,
+                "query_info": query_info
+            }
+        })
+        
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(format_chat_message(prompt, {"query_info": query_info}))
+        
+        # Handle AI response
+        with st.chat_message("assistant"):
+            try:
+                if not st.session_state.initialized:
+                    st.error("Please initialize RAG first.")
+                    return
+                    
+                # Rewrite prompt for better results
+                rewritten_prompt = rewrite_prompt(prompt)
+                
+                # Create query parameters with just the search mode
+                query_param = QueryParam(mode=st.session_state.settings["search_mode"])
+                
+                # Get response from RAG using query method
+                response = st.session_state.rag.query(rewritten_prompt, query_param)
+                
+                # Add assistant message to chat with query info
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": response,  # response is the string directly
+                    "metadata": {
+                        "timestamp": current_date,
+                        "query_info": query_info,
+                        "rag_info": {
+                            "chunks": [],  # We don't have chunks info in this version
+                            "scores": None
+                        }
+                    }
+                })
+                
+                # Display response with metadata
+                st.markdown(format_chat_message(
+                    response,  # response is the string directly
+                    {
+                        "query_info": query_info,
+                        "rag_info": "Query completed"
+                    }
+                ))
+                
+                # Log the interaction
+                add_activity_log(f"[Q] {prompt[:50]}... #{prompt_hash}")
+                add_activity_log(f"[A] Response generated")
+                
+            except Exception as e:
+                error_msg = f"Error generating response: {str(e)}"
+                logger.error(error_msg)
+                add_activity_log(f"[!] {error_msg} #{prompt_hash}")
+                st.error(error_msg)
+
+# Call the chat input handler
+handle_chat_input()
 
 # Define helper functions first
 def handle_settings_update():
     """Update settings and force RAG reinitialization."""
     st.session_state.initialized = False  # Force reinitialization
+    init_rag()  # Reinitialize with new settings
 
-# Add a visual separator for action footer
-if prompt := st.chat_input("Ask away. Expect 60+ seconds processing. Patience in precision. "):
-    add_activity_log(f"> Q: {prompt[:50]}..." if len(prompt) > 50 else f"> Q: {prompt}")
-
-    prompt_rewritten = rewrite_prompt(prompt)
-    # Create query info string
-    prompt_hash = xxhash.xxh64(prompt.encode()).hexdigest()[:12]
-    current_date = time.strftime('%Y-%m-%d %H:%M:%S')
-    query_info = f"[{current_date}] {st.session_state.settings['search_mode']}@{st.session_state.settings['llm_model']} #{prompt_hash}"
-    
-    # Add user message with markdown
-    with st.chat_message("user"):
-        with st.expander(f"> Prompt: {prompt[:50]}..."):
-            st.markdown(f"```\n{prompt_rewritten}\n```")                # Add date and prompt hash
-            st.markdown(f"`> [!query] {query_info}`")
-
-    # Generate response
-    with st.chat_message("assistant"):
-        status_placeholder = st.empty()
-        
-        with status_placeholder.status("Searching and generating response..."):
-            query_param = QueryParam(mode=st.session_state.settings["search_mode"])
-            try:
-                start_time = time.time()  # Start timing
-                with get_event_loop_context() as loop:
-                    response = loop.run_until_complete(st.session_state.rag.aquery(prompt_rewritten, param=query_param))                
-                query_runtime = round(time.time() - start_time, 2)  # Calculate runtime
-                add_activity_log(f"Query #{prompt_hash} runtime: {query_runtime}s")
-
-                # Create metadata
-                metadata = {
-                    "timestamp": time.strftime('%H:%M:%S'),
-                    "search_mode": st.session_state.settings["search_mode"],
-                    "llm_model": st.session_state.settings["llm_model"],
-                    "embedding_model": st.session_state.settings["embedding_model"],
-                    "temperature": st.session_state.settings["temperature"],
-                    "prompt_hash": prompt_hash,
-                    "query_info": query_info,
-                    "runtime": f"{query_runtime}s"  # Add runtime to metadata
-                }
-                
-                # Format and display response with markdown
-                formatted_response = format_chat_message(response, metadata)
-                st.markdown(formatted_response)
-                
-                # Add to message history
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": response,
-                    "metadata": metadata
-                })
-                
-                # Log the response
-                add_activity_log(f"> A: {response[:50]}..." if len(response) > 50 else f"[@] A: {response}")
-                
-            except Exception as e:
-                error_msg = f"Error generating response: {str(e)}"
-                logger.error(error_msg)
-                add_activity_log(f"[!] {error_msg}")
-                
-                fallback_response = "I apologize, but I encountered an error while processing your request."
-                error_metadata = {
-                    "timestamp": time.strftime('%H:%M:%S'),
-                    "error": str(e)
-                }
-                
-                # Format and display error response with markdown
-                formatted_error = format_chat_message(fallback_response, error_metadata)
-                st.markdown(formatted_error)
-                
-                # Add to message history
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": fallback_response,
-                    "metadata": error_metadata
-                })
-                
-                # Log the error
-                add_activity_log(f"[!] {error_msg}")
-
-# Modify handle_insert to use add_activity_log
-def handle_insert(content):
-    """Handle document insertion."""
-    # First check if RAG is initialized
-    if not hasattr(st.session_state, "rag") or st.session_state.rag is None:
-        # Try to initialize RAG
-        api_key = get_api_key()
-        if api_key and test_api_key_secure(api_key):
-            init_rag_secure(api_key)
-        else:
-            st.error("Please provide your OpenAI API key first.")
-            show_api_key_form()
-            return
-    
+def handle_insert(content: str, tags: str = ""):
+    """Handle document insertion into RAG."""
     try:
-        # Verify API key is still working
-        if not test_api_key():
-            show_api_key_form()
-            return
+        # Initialize RAG if needed
+        if not hasattr(st.session_state, "rag") or st.session_state.rag is None:
+            if not init_rag():
+                st.error("Failed to initialize RAG. Please check your settings.")
+                return
+
+        # Generate a hash for logging
+        content_hash = xxhash.xxh64(content.encode()).hexdigest()[:12]
+        
+        # Insert the content
+        st.session_state.rag.insert(content)
+        
+        # Log success
+        add_activity_log(f"[+] Inserted content ({len(content)} chars) #{content_hash}")
+        if tags:
+            add_activity_log(f"[#] Added tags: {tags}")
             
-        with st.spinner("Inserting content..."):
-            # Log the content size for debugging
-            add_activity_log(f"[*] Processing content ({len(content)} chars)...")
+        # Show success message
+        st.success(f"Content inserted successfully! ({len(content)} characters)")
+        
+        # Update graph stats in activity log
+        graph = st.session_state.rag.chunk_entity_relation_graph._graph
+        if graph:
+            nodes = graph.number_of_nodes()
+            edges = graph.number_of_edges()
+            add_activity_log(f"[*] Records: {nodes} nodes, {edges} edges")
             
-            with get_event_loop_context() as loop:
-                success = loop.run_until_complete(st.session_state.rag.ainsert(content))
-                
-                if success:
-                    st.success("Content inserted successfully!")
-                    add_activity_log(f"[+] Added content ({len(content)} chars)")
-                else:
-                    st.error("Failed to insert content - no relationships extracted")
-                    add_activity_log("[-] Failed to extract relationships from content")
-                    
     except Exception as e:
-        logger.exception("An error occurred during insertion.")
-        st.error(f"An error occurred: {e}")
+        error_msg = f"Error inserting content: {str(e)}"
+        logger.error(error_msg)
         add_activity_log(f"[!] Insert error: {str(e)}")
+        st.error(error_msg)
