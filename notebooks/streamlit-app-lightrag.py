@@ -612,16 +612,19 @@ def show_download_dialog():
     
     with tab1:
         st.markdown("Download the current chat session as a markdown file.")
-        handle_chat_download()
+        if "messages" not in st.session_state or not st.session_state.messages:
+            st.warning("No chat history available to download.")
+        else:
+            handle_chat_download()
     
     with tab2:
         st.markdown("Download all inserted records as a JSON file.")
+        if not hasattr(st.session_state, "rag") or st.session_state.rag is None:
+            st.warning("No records available. Please initialize RAG and insert some documents first.")
+            return
+            
         if st.button("Download Records"):
             try:
-                if st.session_state.rag is None:
-                    st.error("No records available. Initialize RAG first.")
-                    return
-                    
                 # Get records from graph
                 records = get_all_records_from_graph()
                 
