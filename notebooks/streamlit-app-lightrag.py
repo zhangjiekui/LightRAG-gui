@@ -24,7 +24,9 @@ st.set_page_config(
         MIT open-source licensed GUI for LightRAG, a lightweight framework for retrieval-augmented generation:
         - [LightRAG Documentation](https://github.com/HKUDS/LightRAG)
         - [GUI Source Code](https://github.com/aiproductguy/LightRAG/notebooks/)
-        - ©️ 2024 AI Product Guy at el
+        - [Come to Demo Fridays at 12noon PT to say hi and give feedback!](https://cal.com/aiproductguy/lightrag-demo)
+        - ©️ 2024 Bry at el #BothParentsMatter
+        [![QRC|64](https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=https://cal.com/aiproductguy/lightrag-demo)](https://cal.com/aiproductguy/lightrag-demo)
         """
     }
 )
@@ -187,7 +189,7 @@ def init_rag():
     # Separate LLM kwargs from query settings
     llm_kwargs = {
         "temperature": st.session_state.settings["temperature"],
-        "system_prompt": st.session_state.settings["system_message"],
+        "system_prompt": st.session_state.settings["system_prompt"],
         "api_key": st.session_state.settings["api_key"]
     }
     
@@ -212,7 +214,8 @@ def init_rag():
     return True
 
 # Move title to sidebar and add activity log first
-st.sidebar.markdown("### [😎 LightRAG](https://github.com/HKUDS/LightRAG) [Kwaai](https://www.kwaai.ai/) Day Demo [🔗](https://lightrag.streamlit.app)\n#alpha 2024-11-09")
+st.sidebar.markdown("### [😎 LightRAG](https://github.com/HKUDS/LightRAG) [Kwaai](https://www.kwaai.ai/) Day [🔗](https://lightrag.streamlit.app)\n#alpha 2024-11-09")
+st.sidebar.markdown("[![QRC|64](https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=https://cal.com/aiproductguy/lightrag-demo)](https://cal.com/aiproductguy/lightrag-demo)")
 
 # Add activity log section in sidebar
 st.sidebar.markdown("##### Activity Log")
@@ -350,9 +353,9 @@ def show_settings_dialog():
         step=0.1
     )
     
-    st.session_state.settings["system_message"] = st.text_area(
-        "System Message:",
-        value=st.session_state.settings["system_message"]
+    st.session_state.settings["system_prompt"] = st.text_area(
+        "System Prompt:",
+        value=st.session_state.settings["system_prompt"]
     )
     
     if st.button("Apply Settings"):
@@ -474,7 +477,7 @@ def handle_chat_download():
         f"- LLM Model: {st.session_state.settings['llm_model']}",
         f"- Embedding Model: {st.session_state.settings['embedding_model']}",
         f"- Temperature: {st.session_state.settings['temperature']}",
-        f"- System Message: {st.session_state.settings['system_message']}\n",
+        f"- System Prompt: {st.session_state.settings['system_prompt']}\n",
         "\n## Conversation\n"
     ]
     
@@ -636,7 +639,7 @@ if "initialized" not in st.session_state:
         "search_mode": "hybrid",
         "llm_model": DEFAULT_LLM_MODEL,
         "embedding_model": DEFAULT_EMBEDDER_MODEL,
-        "system_message": "You are a helpful AI assistant that answers questions based on the provided documents.",
+        "system_prompt": "You are a helpful AI assistant that answers questions based on the provided records in Obsidian markdown format with use of #wikitags and [[wikilinks]].",
         "temperature": 0.7,
         "api_key": os.getenv("OPENAI_API_KEY", "")
     }
