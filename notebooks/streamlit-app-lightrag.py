@@ -269,7 +269,7 @@ def init_rag():
     return True
 
 # Move title to sidebar and add activity log first
-st.sidebar.markdown("### [😎 LightRAG](https://github.com/HKUDS/LightRAG) [Kwaai](https://www.kwaai.ai/) Day [🔗](https://lightrag.streamlit.app)\n#alpha 2024-11-09")
+st.sidebar.markdown("### [😎 LightRAG](https://github.com/HKUDS/LightRAG) [Kwaai](https://www.kwaai.ai/) Day [🔗](https://lightrag-gui.streamlit.app)\n#beta 2024-11-09")
 st.sidebar.markdown("[![QRC|64](https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=https://cal.com/aiproductguy/lightrag-demo)](https://cal.com/aiproductguy/lightrag-demo)")
 
 # Add activity log section in sidebar
